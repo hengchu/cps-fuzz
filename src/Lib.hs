@@ -112,8 +112,7 @@ type BT a = Typeable a
 data BMCS (a :: *) where
   BVar    :: String -> BMCS a
   BNumLit :: Number -> BMCS Number
-  Run :: Number                          -- ^clip bound
-      -> Int                             -- ^vector representation size
+  Run :: Int                             -- ^vector representation size
       -> Expr (Vec Number -> Vec Number) -- ^map function
       -> Expr (Vec Number -> Number)     -- ^release function
       -> BMCS Number

@@ -14,7 +14,6 @@ type Allocation = (Int, Int)
 
 data CompilerState = CompilerState {
   _csNames :: NameState
-  , _csClipBound :: Number
   , _csReprSize :: Int
   , _csMapFunction :: Expr (Vec Number -> Vec Number)
   , _csReleaseFunction :: Expr (Vec Number -> Number)
@@ -25,7 +24,7 @@ makeLensesWith abbreviatedFields ''CompilerState
 
 emptyCompilerState :: CompilerState
 emptyCompilerState =
-  CompilerState emptyNameState 0 0 (ELam id) eVecSum M.empty
+  CompilerState emptyNameState 0 (ELam id) eVecSum M.empty
 
 newtype Compiler a = Compiler { runCompiler_ :: State CompilerState a }
   deriving (Functor, Applicative, Monad, MonadState CompilerState) via (State CompilerState)
@@ -81,11 +80,10 @@ compile :: forall a m.
 compile prog dbName = do
   initializeRepresentation (typeRep @a) dbName
   compile' (prog (CVar dbName))
-  clip <- gets (^. clipBound)
   repr <- gets (^. reprSize)
   f    <- gets (^. mapFunction)
   r    <- gets (^. releaseFunction)
-  return $ Run clip repr f r
+  return $ Run repr f r
 
 -- |Uses the `VecStorable` instance of `a` to initialize the representation
 -- information of the initial input bag.
@@ -219,7 +217,7 @@ compile' (BMap (f :: Expr (a -> b)) db k) = do
           (eInt readStart) (eInt readEnd)
           (eInt writeStart) (eInt writeEnd)
           (eAsVecPF `ecomp` f `ecomp` eFromVecPF)
-  modify $ \st -> st & mapFunction .~ newMapFunction
+  modify $ \st -> st & mapFunction %~ (newMapFunction `ecomp`)
   compile' (k (CVar bmapOutDbName))
 compile' (BFilter (f :: Expr (a -> Bool)) db k) = do
   dbName <- checkDBName db
@@ -231,7 +229,7 @@ compile' (BFilter (f :: Expr (a -> Bool)) db k) = do
           (eInt readStart) (eInt readEnd)
           (eInt writeStart) (eInt writeEnd)
           f'
-  modify $ \st -> st & mapFunction .~ newMapFunction
+  modify $ \st -> st & mapFunction %~ (newMapFunction `ecomp`)
   compile' (k (CVar bfilterOutDbName))
   where f' = eLam $ \vecRepr ->
           eIf (f `eApp` (eFromVec vecRepr)) vecRepr (eVecZeros (eInt (vecSize @a)))
@@ -245,7 +243,7 @@ compile' (BSum clipBound db k) = do
           (eInt readStart) (eInt readEnd)
           (eInt writeStart) (eInt writeEnd)
           f'
-  modify $ \st -> st & mapFunction .~ newMapFunction
+  modify $ \st -> st & mapFunction %~ (newMapFunction `ecomp`)
   compile' (k (CVar bsumOutName))
   where f' = eAsVecPF `ecomp` eClip (eNum clipBound) `ecomp` (eFromVecPF @Number)
         eClip bound = eLam $ \arg ->

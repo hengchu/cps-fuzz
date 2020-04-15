@@ -3,6 +3,7 @@ module Names where
 import Lib
 import qualified Data.Map.Strict as M
 import Control.Lens
+import Data.Semigroup
 
 type NameMap = M.Map String Int
 
@@ -22,12 +23,17 @@ class Monad m => FreshM m where
   gfresh hint = do
     ns <- getNameState
     let gnames = ns ^. globals
-    case M.lookup hint gnames of
+    let lcxts  = ns ^. locals
+    let allCxts = gnames:lcxts
+    let nextNameId = foldMap ((fmap Max) . M.lookup hint) allCxts
+    case fmap getMax nextNameId of
       Nothing -> do
         modifyNameState (\st -> st & globals %~ M.insert hint 1)
+        modifyNameState (\st -> st & locals  %~ map (M.insert hint 1))
         return hint
       Just nextIdx -> do
         modifyNameState (\st -> st & globals %~ M.insert hint (nextIdx + 1))
+        modifyNameState (\st -> st & locals  %~ map (M.insert hint (nextIdx + 1)))
         return (hint ++ show nextIdx)
 
   -- |Enter a new locally fresh context.
