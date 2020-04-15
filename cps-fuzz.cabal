@@ -1,0 +1,107 @@
+cabal-version: 1.12
+
+-- This file has been generated from package.yaml by hpack version 0.31.2.
+--
+-- see: https://github.com/sol/hpack
+--
+-- hash: 597fed01c0f502e5042fe7052d852b3e5d74252e6b85d5dfe4d8b1e41bc8540f
+
+name:           cps-fuzz
+version:        0.1.0.0
+description:    Please see the README on GitHub at <https://github.com/githubuser/cps-fuzz#readme>
+homepage:       https://github.com/githubuser/cps-fuzz#readme
+bug-reports:    https://github.com/githubuser/cps-fuzz/issues
+author:         Author name here
+maintainer:     example@example.com
+copyright:      2020 Author name here
+license:        BSD3
+license-file:   LICENSE
+build-type:     Simple
+extra-source-files:
+    README.md
+    ChangeLog.md
+
+source-repository head
+  type: git
+  location: https://github.com/githubuser/cps-fuzz
+
+library
+  exposed-modules:
+                  Lib
+                  , Compiler
+  default-extensions:
+                   DataKinds
+                 , DeriveGeneric
+                 , DuplicateRecordFields
+                 , FlexibleContexts
+                 , TypeApplications
+                 , DeriveFunctor
+                 , DeriveFoldable
+                 , DeriveTraversable
+                 , TypeOperators
+                 , ApplicativeDo
+                 , LambdaCase
+                 , GeneralizedNewtypeDeriving
+                 , TypeFamilies
+                 , ScopedTypeVariables
+                 , RankNTypes
+                 , FlexibleInstances
+                 , DeriveDataTypeable
+                 , QuasiQuotes
+                 , TemplateHaskell
+                 , ConstraintKinds
+                 , UndecidableInstances
+                 , MultiParamTypeClasses
+                 , KindSignatures
+                 , FunctionalDependencies
+                 , DataKinds
+                 , GADTs
+                 , StandaloneDeriving
+                 , ViewPatterns
+                 , CPP
+                 , PartialTypeSignatures
+                 , PolyKinds
+                 , QuantifiedConstraints
+                 , DerivingVia
+                 , BangPatterns
+                 , PatternSynonyms
+                 , DuplicateRecordFields
+                 , OverloadedLabels
+                 , LambdaCase
+                 , TypeFamilyDependencies
+                 , OverloadedStrings
+  other-modules:
+      Paths_cps_fuzz
+  hs-source-dirs:
+      src
+  build-depends:
+                base >=4.7 && <5
+              , mtl >= 2.2.2 && < 2.3
+              , containers >= 0.6.2.1 && < 0.7
+              , lens >= 4.18.1 && < 4.20
+  default-language: Haskell2010
+
+executable cps-fuzz-exe
+  main-is: Main.hs
+  other-modules:
+      Paths_cps_fuzz
+  hs-source-dirs:
+      app
+  ghc-options: -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+      base >=4.7 && <5
+    , cps-fuzz
+  default-language: Haskell2010
+
+test-suite cps-fuzz-test
+  type: exitcode-stdio-1.0
+  main-is: Spec.hs
+  other-modules:
+      Paths_cps_fuzz
+  hs-source-dirs:
+      test
+  ghc-options: -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+      base >=4.7 && <5
+    , cps-fuzz
+  default-language: Haskell2010
