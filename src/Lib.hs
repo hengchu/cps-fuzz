@@ -31,6 +31,12 @@ class VecStorable a where
   fromVec :: Vec Number -> a
   asVec   :: a -> Vec Number
 
+class Typeable (DeepRepr a) => Syntactic f a where
+  type DeepRepr a :: *
+
+  toDeepRepr   :: a -> f (DeepRepr a)
+  fromDeepRepr :: f (DeepRepr a) -> a
+
 -- |A generic lambda calculus that can be executed on the client side.
 --
 -- TODO: Make this a closure-converted lambda calculus, so that all lambdas are
@@ -253,6 +259,11 @@ b2n False = 0.0
 eLam :: (ET a, ET b) => (Expr a -> Expr b) -> Expr (a -> b)
 eLam = ELam
 
+infixl 9 %@, `eApp`
+
+(%@) :: (ET a, ET b) => Expr (a -> b) -> Expr a -> Expr b
+(%@) = eApp
+
 eApp :: (ET a, ET b) => Expr (a -> b) -> Expr a -> Expr b
 eApp = EApp
 
@@ -324,3 +335,21 @@ instance (VecStorable a, VecStorable b) => VecStorable (a, b) where
   fromVec (Vec as) =
     (fromVec (Vec $ take (vecSize @a) as), fromVec (Vec . take (vecSize @b) . drop (vecSize @a) $ as))
   asVec (a, b) = vecConcat (asVec a) (asVec b)
+
+-- ###########
+-- ## MAGIC ##
+-- ###########
+
+instance Typeable a => Syntactic Expr (Expr a) where
+  type DeepRepr (Expr a) = a
+
+  toDeepRepr = id
+  fromDeepRepr = id
+
+instance ( Syntactic Expr a
+         , Syntactic Expr b
+         ) => Syntactic Expr (a -> b) where
+  type DeepRepr (a -> b) = DeepRepr a -> DeepRepr b
+
+  toDeepRepr   f = eLam $ toDeepRepr . f . fromDeepRepr
+  fromDeepRepr f = fromDeepRepr . eApp f . toDeepRepr
