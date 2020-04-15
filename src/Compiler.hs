@@ -1,21 +1,12 @@
 module Compiler where
 
 import Lib
+import Names
 
 import Control.Lens
 import Control.Monad.State.Strict
-import Control.Monad.Reader
 import qualified Data.Map.Strict as M
 import Type.Reflection
-
-type NameMap = M.Map String Int
-
-data NameState = NameState {
-  _nsGlobals  :: NameMap     -- ^the currently in-scope global names
-  , _nsLocals :: [NameMap]   -- ^the currently in-scope local names
-  } deriving (Show, Eq, Ord)
-
-makeLensesWith abbreviatedFields ''NameState
 
 -- |An allocation value of (a, b) represents the range in the client-side vector
 -- representation that holds values of the corresponding row.
@@ -32,22 +23,6 @@ data CompilerState = CompilerState {
 
 makeLensesWith abbreviatedFields ''CompilerState
 
-class Monad m => FreshM m where
-  -- |Get a globally fresh name.
-  gfresh :: String -> m String
-
-  -- |Enter a new locally fresh context.
-  lpush :: m ()
-
-  -- |Exit the last locally fresh context.
-  lpop :: m ()
-
-  -- |Get a locally fresh name.
-  lfresh :: String -> m String
-
-emptyNameState :: NameState
-emptyNameState = NameState (M.fromList [(secretVarName, 1)]) []
-
 emptyCompilerState :: CompilerState
 emptyCompilerState =
   CompilerState emptyNameState 0 0 (ELam id) eVecSum M.empty
@@ -58,6 +33,7 @@ newtype Compiler a = Compiler { runCompiler_ :: State CompilerState a }
 runCompiler :: Compiler a -> (a, CompilerState)
 runCompiler = flip runState emptyCompilerState . runCompiler_
 
+{-
 newtype DBT m a = DBT { runDBT_ :: ReaderT String m a }
   deriving ( Functor
            , Applicative
@@ -70,6 +46,7 @@ type DBCompiler = DBT Compiler
 
 runDBT :: String -> DBT m a -> m a
 runDBT dbName = flip runReaderT dbName . runDBT_
+-}
 
 -- TODO: we need to figure out how to map intermediate map structures to
 -- representations in the vector.
@@ -93,30 +70,31 @@ runDBT dbName = flip runReaderT dbName . runDBT_
 -- 1. BMap:    I guess nothing changes?
 -- 2. BFilter: Split the vector into 2 halfs?
 -- 3. BSum: collapse into 1 dimension?
-compile :: forall a r m .
+compile :: forall a m.
            ( CFT a
-           , CFT r
-           , BT r
-           , MonadReader String m
            , MonadState CompilerState m
            , FreshM m
            )
-        => (CPSFuzz (Bag a) -> CPSFuzz r)
-        -> m (BMCS r)
-compile prog = do
-  initializeRepresentation (typeRep @a)
-  undefined
+        => (CPSFuzz (Bag a) -> CPSFuzz Number)
+        -> String
+        -> m (BMCS Number)
+compile prog dbName = do
+  initializeRepresentation (typeRep @a) dbName
+  compile' (prog (CVar dbName))
+  clip <- gets (^. clipBound)
+  repr <- gets (^. reprSize)
+  f    <- gets (^. mapFunction)
+  r    <- gets (^. releaseFunction)
+  return $ Run clip repr f r
 
 -- |Uses the `VecStorable` instance of `a` to initialize the representation
 -- information of the initial input bag.
 initializeRepresentation :: forall a m.
                             ( CFT a
-                            , MonadReader String m
                             , MonadState CompilerState m)
-                         => TypeRep a -> m ()
-initializeRepresentation _ = do
+                         => TypeRep a -> String -> m ()
+initializeRepresentation _ dbName = do
   let size = vecSize @a
-  dbName <- ask
   modify $ \st -> st & reprSize .~ size
   modify $ \st -> st & allocation %~ M.insert dbName (0, size-1)
 
@@ -124,105 +102,127 @@ initializeRepresentation _ = do
 -- compilation unit is simple: i.e. only contains arithmetics, and do not touch
 -- the database. Returns Nothing otherwise, and the fusion is accumulated in
 -- compiler state.
-compile' :: ( CFT r
+compile' :: forall r m.
+            ( CFT r
             , BT r
-            , MonadReader String m
             , MonadState CompilerState m
             , FreshM m
             )
          => CPSFuzz r
-         -> m (Maybe (BMCS r))
+         -> m ()
 compile' (CVar x) = do
-  dbName <- ask
-  if x == dbName
-  then return Nothing
-  else return (Just (BVar x))
+  (readStart, readEnd) <- fetchReadRange x
+  case eqTypeRep (typeRep @r) (typeRep @Number) of
+    Nothing ->
+      error $ "compile: I don't know how to support type "
+      ++ (show $ typeRep @r)
+      ++ " in arithmetics yet"
+    Just HRefl -> do
+      let newReleaseFun = eFromVecPF @Number `ecomp` eFocus (eInt readStart) (eInt readEnd)
+      modify $ \st -> st & releaseFunction .~ newReleaseFun
 compile' (CNumLit x) = do
-  return $ Just (BNumLit x)
+  let newReleaseFun = eLam $ \_ -> eNum x
+  modify $ \st -> st & releaseFunction .~ newReleaseFun
 compile' (CAdd a b) = do
-  a' <- compile' a
-  b' <- compile' b
-  case (a', b') of
-    (Just a', Just b') -> return $ Just (BAdd a' b')
-    _ -> error "compile: arithmetic contains complex operations"
+  compile' a
+  aReleaseFun <- gets (^. releaseFunction)
+  compile' b
+  bReleaseFun <- gets (^. releaseFunction)
+  let newReleaseFun =
+        eLam $ \vecRepr -> (aReleaseFun `eApp` vecRepr + bReleaseFun `eApp` vecRepr)
+  modify $ \st -> st & releaseFunction .~ newReleaseFun
 compile' (CMinus a b) = do
-  a' <- compile' a
-  b' <- compile' b
-  case (a', b') of
-    (Just a', Just b') -> return $ Just (BMinus a' b')
-    _ -> error "compile: arithmetic contains complex operations"
+  compile' a
+  aReleaseFun <- gets (^. releaseFunction)
+  compile' b
+  bReleaseFun <- gets (^. releaseFunction)
+  let newReleaseFun =
+        eLam $ \vecRepr -> (aReleaseFun `eApp` vecRepr - bReleaseFun `eApp` vecRepr)
+  modify $ \st -> st & releaseFunction .~ newReleaseFun
 compile' (CMult a b) = do
-  a' <- compile' a
-  b' <- compile' b
-  case (a', b') of
-    (Just a', Just b') -> return $ Just (BMult a' b')
-    _ -> error "compile: arithmetic contains complex operations"
+  compile' a
+  aReleaseFun <- gets (^. releaseFunction)
+  compile' b
+  bReleaseFun <- gets (^. releaseFunction)
+  let newReleaseFun =
+        eLam $ \vecRepr -> (aReleaseFun `eApp` vecRepr * bReleaseFun `eApp` vecRepr)
+  modify $ \st -> st & releaseFunction .~ newReleaseFun
 compile' (CDiv a b) = do
-  a' <- compile' a
-  b' <- compile' b
-  case (a', b') of
-    (Just a', Just b') -> return $ Just (BDiv a' b')
-    _ -> error "compile: arithmetic contains complex operations"
-compile' (CAbs x) = do
-  x' <- compile' x
-  case x' of
-    Just x' -> return $ Just (BAbs x')
-    _ -> error "compile: abs contains complex operations"
+  compile' a
+  aReleaseFun <- gets (^. releaseFunction)
+  compile' b
+  bReleaseFun <- gets (^. releaseFunction)
+  let newReleaseFun =
+        eLam $ \vecRepr -> (aReleaseFun `eApp` vecRepr / bReleaseFun `eApp` vecRepr)
+  modify $ \st -> st & releaseFunction .~ newReleaseFun
+compile' (CAbs a) = do
+  compile' a
+  aReleaseFun <- gets (^. releaseFunction)
+  let newReleaseFun =
+        eLam $ \vecRepr -> (abs $ aReleaseFun `eApp` vecRepr)
+  modify $ \st -> st & releaseFunction .~ newReleaseFun
 compile' (CGT a b) = do
-  a' <- compile' a
-  b' <- compile' b
-  case (a', b') of
-    (Just a', Just b') -> return $ Just (BGT a' b')
-    _ -> error "compile: comparison contains complex operations"
+  compile' a
+  aReleaseFun <- gets (^. releaseFunction)
+  compile' b
+  bReleaseFun <- gets (^. releaseFunction)
+  let newReleaseFun =
+        eLam $ \vecRepr -> (eB2N (aReleaseFun `eApp` vecRepr %> bReleaseFun `eApp` vecRepr))
+  modify $ \st -> st & releaseFunction .~ newReleaseFun
 compile' (CGE a b) = do
-  a' <- compile' a
-  b' <- compile' b
-  case (a', b') of
-    (Just a', Just b') -> return $ Just (BGE a' b')
-    _ -> error "compile: comparison contains complex operations"
+  compile' a
+  aReleaseFun <- gets (^. releaseFunction)
+  compile' b
+  bReleaseFun <- gets (^. releaseFunction)
+  let newReleaseFun =
+        eLam $ \vecRepr -> (eB2N (aReleaseFun `eApp` vecRepr %>= bReleaseFun `eApp` vecRepr))
+  modify $ \st -> st & releaseFunction .~ newReleaseFun
 compile' (CLT a b) = do
-  a' <- compile' a
-  b' <- compile' b
-  case (a', b') of
-    (Just a', Just b') -> return $ Just (BLT a' b')
-    _ -> error "compile: comparison contains complex operations"
+  compile' a
+  aReleaseFun <- gets (^. releaseFunction)
+  compile' b
+  bReleaseFun <- gets (^. releaseFunction)
+  let newReleaseFun =
+        eLam $ \vecRepr -> (eB2N (aReleaseFun `eApp` vecRepr %< bReleaseFun `eApp` vecRepr))
+  modify $ \st -> st & releaseFunction .~ newReleaseFun
 compile' (CLE a b) = do
-  a' <- compile' a
-  b' <- compile' b
-  case (a', b') of
-    (Just a', Just b') -> return $ Just (BLE a' b')
-    _ -> error "compile: comparison contains complex operations"
+  compile' a
+  aReleaseFun <- gets (^. releaseFunction)
+  compile' b
+  bReleaseFun <- gets (^. releaseFunction)
+  let newReleaseFun =
+        eLam $ \vecRepr -> (eB2N (aReleaseFun `eApp` vecRepr %<= bReleaseFun `eApp` vecRepr))
+  modify $ \st -> st & releaseFunction .~ newReleaseFun
 compile' (CEQ a b) = do
-  a' <- compile' a
-  b' <- compile' b
-  case (a', b') of
-    (Just a', Just b') -> return $ Just (BEQ a' b')
-    _ -> error "compile: comparison contains complex operations"
+  compile' a
+  aReleaseFun <- gets (^. releaseFunction)
+  compile' b
+  bReleaseFun <- gets (^. releaseFunction)
+  let newReleaseFun =
+        eLam $ \vecRepr -> (eB2N (aReleaseFun `eApp` vecRepr %== bReleaseFun `eApp` vecRepr))
+  modify $ \st -> st & releaseFunction .~ newReleaseFun
 compile' (CNEQ a b) = do
-  a' <- compile' a
-  b' <- compile' b
-  case (a', b') of
-    (Just a', Just b') -> return $ Just (BNEQ a' b')
-    _ -> error "compile: comparison contains complex operations"
+  compile' a
+  aReleaseFun <- gets (^. releaseFunction)
+  compile' b
+  bReleaseFun <- gets (^. releaseFunction)
+  let newReleaseFun =
+        eLam $ \vecRepr -> (eB2N (aReleaseFun `eApp` vecRepr %/= bReleaseFun `eApp` vecRepr))
+  modify $ \st -> st & releaseFunction .~ newReleaseFun
 compile' (BMap (f :: Expr (a -> b)) db k) = do
-  dbName <- ask
-  checkDBName db dbName
-  let bVecSize = vecSize @b
-  allocMap <- gets (^. allocation)
+  dbName <- checkDBName db
   (readStart, readEnd) <- fetchReadRange dbName
   bmapOutDbName <- gfresh $ dbName ++ "_bmap_output"
-  (writeStart, writeEnd) <- allocate (typeRep @a) bmapOutDbName
+  (writeStart, writeEnd) <- allocate (typeRep @b) bmapOutDbName
   let newMapFunction =
         eVecStore
           (eInt readStart) (eInt readEnd)
           (eInt writeStart) (eInt writeEnd)
           (eAsVecPF `ecomp` f `ecomp` eFromVecPF)
   modify $ \st -> st & mapFunction .~ newMapFunction
-  local (const bmapOutDbName) $ compile' (k (CVar bmapOutDbName))
+  compile' (k (CVar bmapOutDbName))
 compile' (BFilter (f :: Expr (a -> Bool)) db k) = do
-  dbName <- ask
-  checkDBName db dbName
-  let aVecSize = vecSize @a
+  dbName <- checkDBName db
   (readStart, readEnd) <- fetchReadRange dbName
   bfilterOutDbName <- gfresh $ dbName ++ "_bfilter_output"
   (writeStart, writeEnd) <- allocate (typeRep @a) bfilterOutDbName
@@ -230,8 +230,30 @@ compile' (BFilter (f :: Expr (a -> Bool)) db k) = do
         eVecStore
           (eInt readStart) (eInt readEnd)
           (eInt writeStart) (eInt writeEnd)
-          undefined
-  undefined
+          f'
+  modify $ \st -> st & mapFunction .~ newMapFunction
+  compile' (k (CVar bfilterOutDbName))
+  where f' = eLam $ \vecRepr ->
+          eIf (f `eApp` (eFromVec vecRepr)) vecRepr (eVecZeros (eInt (vecSize @a)))
+compile' (BSum clipBound db k) = do
+  dbName <- checkDBName db
+  (readStart, readEnd) <- fetchReadRange dbName
+  bsumOutName <- gfresh $ dbName ++ "_bsum_output"
+  (writeStart, writeEnd) <- allocate (typeRep @Number) bsumOutName
+  let newMapFunction =
+        eVecStore
+          (eInt readStart) (eInt readEnd)
+          (eInt writeStart) (eInt writeEnd)
+          f'
+  modify $ \st -> st & mapFunction .~ newMapFunction
+  compile' (k (CVar bsumOutName))
+  where f' = eAsVecPF `ecomp` eClip (eNum clipBound) `ecomp` (eFromVecPF @Number)
+        eClip bound = eLam $ \arg ->
+          eIf (arg %> bound)
+            bound
+            (eIf (arg %< -bound)
+              (-bound)
+              arg)
 
 fetchReadRange :: MonadState CompilerState m => String -> m (Int, Int)
 fetchReadRange dbName = do
@@ -240,13 +262,10 @@ fetchReadRange dbName = do
     Nothing -> error $ "compile: db " ++ dbName ++ " has no associated range"
     Just range -> return range
 
-checkDBName :: Monad m => CPSFuzz (Bag a) -> String -> m ()
-checkDBName db dbName =
+checkDBName :: Monad m => CPSFuzz (Bag a) -> m String
+checkDBName db =
   case db of
-    CVar dbName' ->
-      if dbName' /= dbName
-      then error $ "compile: db argument is " ++ show dbName' ++ ", but we expected " ++ show dbName
-      else return ()
+    CVar dbName -> return dbName
     _ -> error $ "compile: db argument is not a variable?!"
 
 -- |Takes a `VecStorable` type, the associated `dbName`, and allocates on the
@@ -271,36 +290,5 @@ allocate _ dbName = do
 -- ##################
 
 instance FreshM Compiler where
-  gfresh hint = do
-    gnames <- gets (^. names . globals)
-    case M.lookup hint gnames of
-      Nothing -> do
-        modify (\st -> st & names . globals %~ M.insert hint 1)
-        return hint
-      Just nextIdx -> do
-        modify (\st -> st & names . globals %~ M.insert hint (nextIdx + 1))
-        return (hint ++ show nextIdx)
-  lpush = do
-    gnames <- gets (^. names . globals)
-    lcxts  <- gets (^. names . locals)
-    case lcxts of
-      []     -> modify (\st -> st & names . locals %~ (gnames:))
-      (c:cs) -> modify (\st -> st & names . locals %~ (c:))
-  lpop = do
-    lcxts <- gets (^. names . locals)
-    case lcxts of
-      []     -> error "lpop: no pushed contexts!"
-      (c:cs) -> modify (\st -> st & names . locals %~ (const cs))
-  lfresh hint = do
-    lcxts <- gets (^. names . locals)
-    case lcxts of
-      [] -> error "lfresh: no pushed contexts!"
-      (c:cs) -> case M.lookup hint c of
-                  Nothing -> do
-                    let c' = M.insert hint 1 c
-                    modify (\st -> st & names . locals %~ (const $ c':cs))
-                    return hint
-                  Just nextIdx -> do
-                    let c' = M.insert hint (nextIdx + 1) c
-                    modify (\st -> st & names . locals %~ (const $ c':cs))
-                    return (hint ++ show nextIdx)
+  getNameState = gets (^. names)
+  modifyNameState f = modify (\st -> st & names %~ f)

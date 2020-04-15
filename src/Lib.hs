@@ -39,18 +39,24 @@ class VecStorable a where
 data Expr a :: * where
   EVar    ::                       String             -> Expr a
   ELam    :: (ET a, ET b)       => (Expr a -> Expr b) -> Expr (a -> b)
-  EApp    :: (ET a)             => Expr (a -> b)      -> Expr a -> Expr b
+  EApp    :: (ET a, ET b)       => Expr (a -> b)      -> Expr a -> Expr b
   EComp   :: (ET a, ET b, ET c) => Expr (b -> c)      -> Expr (a -> b) -> Expr (a -> c)
+  EIf     :: ET a               => Expr Bool          -> Expr a        -> Expr a -> Expr a
+
   EIntLit :: Int    -> Expr Int
   ENumLit :: Number -> Expr Number
 
+  EBoolToNum :: Expr Bool -> Expr Number
+
   -- |Client-side vector manipulation functions.
+  EFocus     :: Expr Int -> Expr Int -> Expr (Vec Number -> Vec Number)
   EVecSum    :: Expr (Vec Number -> Number)
   EVecExtend :: Expr Int -> Expr (Vec Number -> Vec Number)
   EVecStore  :: Expr Int -> Expr Int -- read start, read end
              -> Expr Int -> Expr Int -- write start, write end
              -> Expr (Vec Number -> Vec Number) -- function applied to read part
              -> Expr (Vec Number -> Vec Number)
+  EVecZeros  :: Expr Int -> Expr (Vec Number)
   EAsVec   :: (ET a, VecStorable a) => Expr a -> Expr (Vec Number)
   EFromVec :: (ET a, VecStorable a) => Expr (Vec Number) -> Expr a
 
@@ -100,20 +106,6 @@ type BT a = Typeable a
 data BMCS (a :: *) where
   BVar    :: String -> BMCS a
   BNumLit :: Number -> BMCS Number
-
-  BAdd   :: BMCS Number -> BMCS Number -> BMCS Number
-  BMinus :: BMCS Number -> BMCS Number -> BMCS Number
-  BMult  :: BMCS Number -> BMCS Number -> BMCS Number
-  BDiv   :: BMCS Number -> BMCS Number -> BMCS Number
-  BAbs   :: BMCS Number -> BMCS Number
-
-  BGT  :: BMCS Number -> BMCS Number -> BMCS Bool
-  BGE  :: BMCS Number -> BMCS Number -> BMCS Bool
-  BLT  :: BMCS Number -> BMCS Number -> BMCS Bool
-  BLE  :: BMCS Number -> BMCS Number -> BMCS Bool
-  BEQ  :: BMCS Number -> BMCS Number -> BMCS Bool
-  BNEQ :: BMCS Number -> BMCS Number -> BMCS Bool
-
   Run :: Number                          -- ^clip bound
       -> Int                             -- ^vector representation size
       -> Expr (Vec Number -> Vec Number) -- ^map function
@@ -210,31 +202,10 @@ instance Fractional (CPSFuzz Number) where
   fromRational = CNumLit . fromRational
   (/) = CDiv
 
-instance SynOrd (BMCS Number) where
-  type Carrier (BMCS Number) = BMCS
-
-  (%<)  = BLT
-  (%<=) = BLE
-  (%>)  = BGT
-  (%>=) = BGE
-  (%==) = BEQ
-  (%/=) = BNEQ
-
-instance Num (BMCS Number) where
-  (+) = BAdd
-  (-) = BMinus
-  (*) = BMult
-  abs = BAbs
-  signum v = (abs v) / v
-  fromInteger = BNumLit . fromInteger
-
-instance Fractional (BMCS Number) where
-  fromRational = BNumLit . fromRational
-  (/) = BDiv
-
 secretVarName :: String
 secretVarName = "do not create a variable with this name... otherwise everything falls apart :)"
 
+{-
 substExpr :: forall a r. (BT a, BT r) => String -> Expr a -> Expr r -> Expr r
 substExpr x term e = undefined
 
@@ -243,6 +214,7 @@ substCPSFuzz x term e = undefined
 
 substBMCS :: forall a r. (BT a, BT r) => String -> BMCS a -> BMCS r -> BMCS r
 substBMCS x term e = undefined
+-}
 
 vecConcat :: Vec a -> Vec a -> Vec a
 vecConcat (Vec as) (Vec bs) = Vec (as ++ bs)
@@ -267,8 +239,22 @@ vecStore readStart readEnd writeStart writeEnd f (Vec as) =
           then error "vecStore: output length calculation wrong"
           else Vec (left ++ output ++ right)
 
+vecZeros :: Int -> Vec Number
+vecZeros n = Vec $ take n (repeat 0)
+
+focus :: Int -> Int -> Vec Number -> Vec Number
+focus start end (Vec as) =
+  Vec . take (end - start + 1) . drop start $ as
+
+b2n :: Bool -> Number
+b2n True  = 1.0
+b2n False = 0.0
+
 eLam :: (ET a, ET b) => (Expr a -> Expr b) -> Expr (a -> b)
 eLam = ELam
+
+eApp :: (ET a, ET b) => Expr (a -> b) -> Expr a -> Expr b
+eApp = EApp
 
 ecomp :: (ET a, ET b, ET c) => Expr (b -> c) -> Expr (a -> b) -> Expr (a -> c)
 ecomp = EComp
@@ -302,6 +288,18 @@ eFromVec = EFromVec
 
 eFromVecPF :: (ET a, VecStorable a) => Expr (Vec Number -> a)
 eFromVecPF = eLam eFromVec
+
+eVecZeros :: Expr Int -> Expr (Vec Number)
+eVecZeros = EVecZeros
+
+eIf :: ET a => Expr Bool -> Expr a -> Expr a -> Expr a
+eIf = EIf
+
+eFocus :: Expr Int -> Expr Int -> Expr (Vec Number -> Vec Number)
+eFocus = EFocus
+
+eB2N :: Expr Bool -> Expr Number
+eB2N = EBoolToNum
 
 instance Num (Vec Number) where
   (Vec as) + (Vec bs) = Vec (zipWith (+) as bs)

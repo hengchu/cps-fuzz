@@ -26,9 +26,19 @@ source-repository head
   location: https://github.com/githubuser/cps-fuzz
 
 library
+  ghc-options: -Wall
+               -Wno-name-shadowing
+               -fprint-potential-instances
+               -Wno-orphans
+               -fwarn-redundant-constraints
+               -Wno-redundant-constraints
+               -Wno-unused-top-binds
+               -Werror
   exposed-modules:
                   Lib
-                  , Compiler
+                , Compiler
+                , Pretty
+                , Names
   default-extensions:
                    DataKinds
                  , DeriveGeneric
@@ -79,6 +89,7 @@ library
               , mtl >= 2.2.2 && < 2.3
               , containers >= 0.6.2.1 && < 0.7
               , lens >= 4.18.1 && < 4.20
+              , ansi-wl-pprint >= 0.6.9 && < 0.7
   default-language: Haskell2010
 
 executable cps-fuzz-exe
