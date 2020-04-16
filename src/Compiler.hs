@@ -1,24 +1,24 @@
 module Compiler where
 
-import Lib
-import Names
-
 import Control.Lens
 import Control.Monad.State.Strict
 import qualified Data.Map.Strict as M
+import Lib
+import Names
 import Type.Reflection
 
--- |An allocation value of (a, b) represents the range in the client-side vector
--- representation that holds values of the corresponding row.
+-- | An allocation value of (a, b) represents the range in the client-side vector
+--  representation that holds values of the corresponding row.
 type Allocation = (Int, Int)
 
-data CompilerState = CompilerState {
-  _csNames :: NameState
-  , _csReprSize :: Int
-  , _csMapFunction :: Expr (Vec Number -> Vec Number)
-  , _csReleaseFunction :: Expr (Vec Number -> Number)
-  , _csAllocation :: M.Map String Allocation
-  }
+data CompilerState
+  = CompilerState
+      { _csNames :: NameState,
+        _csReprSize :: Int,
+        _csMapFunction :: Expr (Vec Number -> Vec Number),
+        _csReleaseFunction :: Expr (Vec Number -> Number),
+        _csAllocation :: M.Map String Allocation
+      }
 
 makeLensesWith abbreviatedFields ''CompilerState
 
@@ -26,7 +26,7 @@ emptyCompilerState :: CompilerState
 emptyCompilerState =
   CompilerState emptyNameState 0 (ELam id) eVecSum M.empty
 
-newtype Compiler a = Compiler { runCompiler_ :: State CompilerState a }
+newtype Compiler a = Compiler {runCompiler_ :: State CompilerState a}
   deriving (Functor, Applicative, Monad, MonadState CompilerState) via (State CompilerState)
 
 runCompiler :: Compiler a -> (a, CompilerState)
@@ -69,52 +69,59 @@ runDBT dbName = flip runReaderT dbName . runDBT_
 -- 1. BMap:    I guess nothing changes?
 -- 2. BFilter: Split the vector into 2 halfs?
 -- 3. BSum: collapse into 1 dimension?
-compile :: forall a m.
-           ( CFT a
-           , MonadState CompilerState m
-           , FreshM m
-           )
-        => (CPSFuzz (Bag a) -> CPSFuzz Number)
-        -> String
-        -> m (BMCS Number)
+compile ::
+  forall a m.
+  ( CFT a,
+    MonadState CompilerState m,
+    FreshM m
+  ) =>
+  (CPSFuzz (Bag a) -> CPSFuzz Number) ->
+  String ->
+  m (BMCS Number)
 compile prog dbName = do
   initializeRepresentation (typeRep @a) dbName
   compile' (prog (CVar dbName))
   repr <- gets (^. reprSize)
-  f    <- gets (^. mapFunction)
-  r    <- gets (^. releaseFunction)
+  f <- gets (^. mapFunction)
+  r <- gets (^. releaseFunction)
   return $ Run repr f r
 
--- |Uses the `VecStorable` instance of `a` to initialize the representation
--- information of the initial input bag.
-initializeRepresentation :: forall a m.
-                            ( CFT a
-                            , MonadState CompilerState m)
-                         => TypeRep a -> String -> m ()
+-- | Uses the `VecStorable` instance of `a` to initialize the representation
+--  information of the initial input bag.
+initializeRepresentation ::
+  forall a m.
+  ( CFT a,
+    MonadState CompilerState m
+  ) =>
+  TypeRep a ->
+  String ->
+  m ()
 initializeRepresentation _ dbName = do
   let size = vecSize @a
   modify $ \st -> st & reprSize .~ size
-  modify $ \st -> st & allocation %~ M.insert dbName (0, size-1)
+  modify $ \st -> st & allocation %~ M.insert dbName (0, size -1)
 
--- |The concret impl of compile. Returns Just (some BMCS value) if the
--- compilation unit is simple: i.e. only contains arithmetics, and do not touch
--- the database. Returns Nothing otherwise, and the fusion is accumulated in
--- compiler state.
-compile' :: forall r m.
-            ( CFT r
-            , BT r
-            , MonadState CompilerState m
-            , FreshM m
-            )
-         => CPSFuzz r
-         -> m ()
+-- | The concret impl of compile. Returns Just (some BMCS value) if the
+--  compilation unit is simple: i.e. only contains arithmetics, and do not touch
+--  the database. Returns Nothing otherwise, and the fusion is accumulated in
+--  compiler state.
+compile' ::
+  forall r m.
+  ( CFT r,
+    BT r,
+    MonadState CompilerState m,
+    FreshM m
+  ) =>
+  CPSFuzz r ->
+  m ()
 compile' (CVar x) = do
   (readStart, readEnd) <- fetchReadRange x
   case eqTypeRep (typeRep @r) (typeRep @Number) of
     Nothing ->
-      error $ "compile: I don't know how to support type "
-      ++ (show $ typeRep @r)
-      ++ " in arithmetics yet"
+      error $
+        "compile: I don't know how to support type "
+          ++ (show $ typeRep @r)
+          ++ " in arithmetics yet"
     Just HRefl -> do
       let newReleaseFun = eFromVecPF @Number `ecomp` eFocus (eInt readStart) (eInt readEnd)
       modify $ \st -> st & releaseFunction .~ newReleaseFun
@@ -214,8 +221,10 @@ compile' (BMap (f :: Expr (a -> b)) db k) = do
   (writeStart, writeEnd) <- allocate (typeRep @b) bmapOutDbName
   let newMapFunction =
         eVecStore
-          (eInt readStart) (eInt readEnd)
-          (eInt writeStart) (eInt writeEnd)
+          (eInt readStart)
+          (eInt readEnd)
+          (eInt writeStart)
+          (eInt writeEnd)
           (eAsVecPF `ecomp` f `ecomp` eFromVecPF)
   modify $ \st -> st & mapFunction %~ (newMapFunction `ecomp`)
   compile' (k (CVar bmapOutDbName))
@@ -226,13 +235,16 @@ compile' (BFilter (f :: Expr (a -> Bool)) db k) = do
   (writeStart, writeEnd) <- allocate (typeRep @a) bfilterOutDbName
   let newMapFunction =
         eVecStore
-          (eInt readStart) (eInt readEnd)
-          (eInt writeStart) (eInt writeEnd)
+          (eInt readStart)
+          (eInt readEnd)
+          (eInt writeStart)
+          (eInt writeEnd)
           f'
   modify $ \st -> st & mapFunction %~ (newMapFunction `ecomp`)
   compile' (k (CVar bfilterOutDbName))
-  where f' = eLam $ \vecRepr ->
-          eIf (f `eApp` (eFromVec vecRepr)) vecRepr (eVecZeros (eInt (vecSize @a)))
+  where
+    f' = eLam $ \vecRepr ->
+      eIf (f `eApp` (eFromVec vecRepr)) vecRepr (eVecZeros (eInt (vecSize @a)))
 compile' (BSum clipBound db k) = do
   dbName <- checkDBName db
   (readStart, readEnd) <- fetchReadRange dbName
@@ -240,18 +252,24 @@ compile' (BSum clipBound db k) = do
   (writeStart, writeEnd) <- allocate (typeRep @Number) bsumOutName
   let newMapFunction =
         eVecStore
-          (eInt readStart) (eInt readEnd)
-          (eInt writeStart) (eInt writeEnd)
+          (eInt readStart)
+          (eInt readEnd)
+          (eInt writeStart)
+          (eInt writeEnd)
           f'
   modify $ \st -> st & mapFunction %~ (newMapFunction `ecomp`)
   compile' (k (CVar bsumOutName))
-  where f' = eAsVecPF `ecomp` eClip (eNum clipBound) `ecomp` (eFromVecPF @Number)
-        eClip bound = eLam $ \arg ->
-          eIf (arg %> bound)
-            bound
-            (eIf (arg %< -bound)
-              (-bound)
-              arg)
+  where
+    f' = eAsVecPF `ecomp` eClip (eNum clipBound) `ecomp` (eFromVecPF @Number)
+    eClip bound = eLam $ \arg ->
+      eIf
+        (arg %> bound)
+        bound
+        ( eIf
+            (arg %< - bound)
+            (- bound)
+            arg
+        )
 
 fetchReadRange :: MonadState CompilerState m => String -> m (Int, Int)
 fetchReadRange dbName = do
@@ -266,19 +284,20 @@ checkDBName db =
     CVar dbName -> return dbName
     _ -> error $ "compile: db argument is not a variable?!"
 
--- |Takes a `VecStorable` type, the associated `dbName`, and allocates on the
--- client-side vector enough space to store each row of the new db.
-allocate :: forall b m.
-            (CFT b, MonadState CompilerState m)
-         => TypeRep b
-         -> String
-         -> m (Int, Int)
+-- | Takes a `VecStorable` type, the associated `dbName`, and allocates on the
+--  client-side vector enough space to store each row of the new db.
+allocate ::
+  forall b m.
+  (CFT b, MonadState CompilerState m) =>
+  TypeRep b ->
+  String ->
+  m (Int, Int)
 allocate _ dbName = do
   currReprSize <- gets (^. reprSize)
   let bVecSize = vecSize @b
   let writeStart = currReprSize
   let writeEnd = writeStart + bVecSize - 1
-  modify $ \st -> st & reprSize %~ (+bVecSize)
+  modify $ \st -> st & reprSize %~ (+ bVecSize)
   modify $ \st -> st & allocation %~ (M.insert dbName (writeStart, writeEnd))
   modify $ \st -> st & mapFunction %~ (eVecExtend (eInt bVecSize) `ecomp`)
   return (writeStart, writeEnd)
