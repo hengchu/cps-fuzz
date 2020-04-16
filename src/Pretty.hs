@@ -68,8 +68,8 @@ prettyExpr p (EApp f a) = do
   return $ parensIf (p > precedenceTable "App") (f' <+> a')
 prettyExpr p (EComp g f) = do
   g' <- prettyExpr (precedenceTable ".") g
-  f' <- prettyExpr (p + associativityTable ".") f
-  return $ parensIf (p > precedenceTable ".") (g' <+> dot <+> f')
+  f' <- prettyExpr (precedenceTable "." + associativityTable ".") f
+  return $ parensIf (p > precedenceTable ".") (g' </> dot <+> f')
 prettyExpr p (EIf c a b) = do
   c' <- prettyExpr (precedenceTable "App") c
   a' <- prettyExpr (precedenceTable "App" + associativityTable "App") a
@@ -91,10 +91,10 @@ prettyExpr p (EFocus start end) = do
   end' <- prettyExpr (precedenceTable "App" + associativityTable "App") end
   return $ parensIf (p > precedenceTable "App") $ text "focus" <+> start' <+> end'
 prettyExpr _ EVecSum =
-  return $ text "vec_sum"
+  return $ text "vecSum"
 prettyExpr p (EVecExtend w) = do
   w' <- prettyExpr (precedenceTable "App") w
-  return $ parensIf (p > precedenceTable "App") $ text "vec_extend" <+> w'
+  return $ parensIf (p > precedenceTable "App") $ text "vecExtend" <+> w'
 prettyExpr p (EVecStore rStart rEnd wStart wEnd f) = do
   rStart' <- prettyExpr (precedenceTable "App") rStart
   rEnd' <- prettyExpr (precedenceTable "App" + associativityTable "App") rEnd
@@ -108,7 +108,7 @@ prettyExpr p (EVecZeros w) = do
   w' <- prettyExpr (precedenceTable "App") w
   return
     $ parensIf (p > precedenceTable "App")
-    $ text "vec_zeros" <+> w'
+    $ text "vecZeros" <+> w'
 prettyExpr p (EAsVec (a :: Expr arg)) = do
   a' <- prettyExpr (precedenceTable "App") a
   return
@@ -214,7 +214,7 @@ prettyBMCS p (Run reprSize mf rf) = do
   rf' <- prettyExpr (precedenceTable "App" + associativityTable "App" * 3) rf
   return
     $ parensIf (p > precedenceTable "App")
-    $ text "bmcs" <+> int reprSize <> (hardline <> mf') <> (hardline <> rf')
+    $ text "bmcs" <+> int reprSize <> (hardline <> (red mf')) <> (hardline <> (dullyellow rf'))
 
 parensIf :: Bool -> Doc -> Doc
 parensIf cond = if cond then parens else id
