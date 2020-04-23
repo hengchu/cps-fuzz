@@ -28,7 +28,7 @@ type Distr = Identity
 type CPSFuzzDistr a = Mon CPSFuzz Distr (CPSFuzz a)
 
 -- | Type of shallow monadic embedding for `Expr`.
-type ExprDistr    a = Mon Expr Distr (Expr a)
+type ExprDistr a = Mon Expr Distr (Expr a)
 
 -- | Syntax of order comparison.
 class SynOrd a where
@@ -94,32 +94,24 @@ data Expr a :: * where
   ELE :: Expr Number -> Expr Number -> Expr Bool
   EEQ :: Expr Number -> Expr Number -> Expr Bool
   ENEQ :: Expr Number -> Expr Number -> Expr Bool
-
   EJust :: ET a => Expr a -> Expr (Maybe a)
   ENothing :: ET a => Expr (Maybe a)
   EIsJust :: (ET a) => Expr (Maybe a) -> Expr Bool
   EFromJust :: (ET a) => Expr (Maybe a) -> Expr a
-
   EMonoidEmpty :: (VecMonoid a, ET a) => Expr a
-
-  -- |Grow the vector by the given size.
+  -- | Grow the vector by the given size.
   EVecExtend :: Expr Int -> Expr (Vec Number) -> Expr (Vec Number)
-
-  -- |Focus on the vector in the given range [start, end).
-  EVecFocus  :: Expr Int -> Expr Int -> Expr (Vec Number) -> Expr (Vec Number)
-
-  -- |Concatenate two vectors.
+  -- | Focus on the vector in the given range [start, end).
+  EVecFocus :: Expr Int -> Expr Int -> Expr (Vec Number) -> Expr (Vec Number)
+  -- | Concatenate two vectors.
   EVecConcat :: Expr (Vec Number) -> Expr (Vec Number) -> Expr (Vec Number)
-
   EPair :: (ET a, ET b) => Expr a -> Expr b -> Expr (a, b)
-  EFst  :: (ET a, ET b) => Expr (a, b) -> Expr a
-  ESnd  :: (ET a, ET b) => Expr (a, b) -> Expr b
-
+  EFst :: (ET a, ET b) => Expr (a, b) -> Expr a
+  ESnd :: (ET a, ET b) => Expr (a, b) -> Expr b
   EShare :: (ET a, ET b) => Expr a -> (Expr a -> Expr b) -> Expr b
-
-  ELap    :: Number -> Expr Number -> Expr (Distr Number)
+  ELap :: Number -> Expr Number -> Expr (Distr Number)
   EReturn :: Expr a -> Expr (Distr a)
-  EBind   :: Expr (Distr a) -> (Expr a -> Expr (Distr b)) -> Expr (Distr b)
+  EBind :: Expr (Distr a) -> (Expr a -> Expr (Distr b)) -> Expr (Distr b)
 
 type CPSKont a r = CPSFuzz a -> CPSFuzz r
 
@@ -458,7 +450,8 @@ instance
 instance
   ( Syntactic Expr a,
     Syntactic Expr b
-  ) => Syntactic Expr (a, b)
+  ) =>
+  Syntactic Expr (a, b)
   where
   type DeepRepr (a, b) = (DeepRepr a, DeepRepr b)
 
