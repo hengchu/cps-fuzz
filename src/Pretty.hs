@@ -162,7 +162,7 @@ prettyCPSFuzz p (BSum clip db k) = do
     $ parensIf (p > precedenceTable "App")
     $ text "bsum" <+> double clip <+> db' <+> k'
 
-prettyCPSKont :: String -> CPSKont a b -> P Doc
+prettyCPSKont :: Typeable a => String -> CPSKont a b -> P Doc
 prettyCPSKont freshArgName k = do
   body' <- prettyCPSFuzz (precedenceTable "App") (k (CVar freshArgName))
   return $ parens $ text "\\" <> text freshArgName <+> text "->" <+> body'
@@ -170,7 +170,7 @@ prettyCPSKont freshArgName k = do
 prettyBMCS :: Int -> BMCS a -> P Doc
 prettyBMCS _ (BVar x) = return $ text x
 prettyBMCS _ (BNumLit x) = return $ double x
-prettyBMCS p (Run reprSize mf rf) = do
+prettyBMCS p (Run reprSize bound mf rf) = do
   mf' <- prettyExpr (precedenceTable "App" + associativityTable "App" * 2) mf
   rf' <- prettyExpr (precedenceTable "App" + associativityTable "App" * 3) rf
   return

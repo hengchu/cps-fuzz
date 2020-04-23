@@ -2,8 +2,9 @@
 
 module Lib where
 
-import Type.Reflection
 import Data.Functor.Identity
+import IfCxt
+import Type.Reflection
 
 newtype Bag a = Bag [a]
   deriving (Show, Eq, Ord)
@@ -17,7 +18,7 @@ infix 4 %<, %<=, %>, %>=, %==, %/=
 
 -- | Utility type used to embed a monadic computation in the monad `m` into a
 -- language carrier `f`.
-newtype Mon f m a = Mon { runMon :: forall b. (a -> f (m b)) -> f (m b) }
+newtype Mon f m a = Mon {runMon :: forall b. (a -> f (m b)) -> f (m b)}
   deriving (Functor)
 
 -- TODO: make this a proper distribution type
@@ -25,6 +26,9 @@ type Distr = Identity
 
 -- | Type of shallow monadic embedding for `CPSFuzz`.
 type CPSFuzzDistr a = Mon CPSFuzz Distr (CPSFuzz a)
+
+-- | Type of shallow monadic embedding for `Expr`.
+type ExprDistr    a = Mon Expr Distr (Expr a)
 
 -- | Syntax of order comparison.
 class SynOrd a where
@@ -42,14 +46,15 @@ class VecStorable a where
   vecSize :: Int
 
   fromVec :: Vec Number -> a
-  asVec   :: a -> Vec Number
+  asVec :: a -> Vec Number
 
 class VecStorable a => VecMonoid a where
   -- | Law:
   -- 1. asVec (a `add` b) = (asVec a) + (asVec b) -- can distribute `asVec`
   -- 2. empty is identity for add
   -- 3. more?
-  add   :: a -> a -> a
+  add :: a -> a -> a
+
   empty :: a
 
 class VecMonoid a => Clip a where
@@ -71,7 +76,7 @@ class Typeable (DeepRepr a) => Syntactic f a where
 --  closed programs, and all captured variables are explicit arguments to
 --  lambdas.
 data Expr a :: * where
-  EVar :: String -> Expr a
+  EVar :: ET a => String -> Expr a
   ELam :: (ET a, ET b) => (Expr a -> Expr b) -> Expr (a -> b)
   EApp :: (ET a, ET b) => Expr (a -> b) -> Expr a -> Expr b
   EComp :: (ET a, ET b, ET c) => Expr (b -> c) -> Expr (a -> b) -> Expr (a -> c)
@@ -90,18 +95,42 @@ data Expr a :: * where
   EEQ :: Expr Number -> Expr Number -> Expr Bool
   ENEQ :: Expr Number -> Expr Number -> Expr Bool
 
-  EIsJust   :: (ET a) => Expr (Maybe a) -> Expr Bool
+  EJust :: ET a => Expr a -> Expr (Maybe a)
+  ENothing :: ET a => Expr (Maybe a)
+  EIsJust :: (ET a) => Expr (Maybe a) -> Expr Bool
   EFromJust :: (ET a) => Expr (Maybe a) -> Expr a
+
+  EMonoidEmpty :: (VecMonoid a, ET a) => Expr a
+
+  -- |Grow the vector by the given size.
+  EVecExtend :: Expr Int -> Expr (Vec Number) -> Expr (Vec Number)
+
+  -- |Focus on the vector in the given range [start, end).
+  EVecFocus  :: Expr Int -> Expr Int -> Expr (Vec Number) -> Expr (Vec Number)
+
+  -- |Concatenate two vectors.
+  EVecConcat :: Expr (Vec Number) -> Expr (Vec Number) -> Expr (Vec Number)
+
+  EPair :: (ET a, ET b) => Expr a -> Expr b -> Expr (a, b)
+  EFst  :: (ET a, ET b) => Expr (a, b) -> Expr a
+  ESnd  :: (ET a, ET b) => Expr (a, b) -> Expr b
+
+  EShare :: (ET a, ET b) => Expr a -> (Expr a -> Expr b) -> Expr b
+
+  ELap    :: Number -> Expr Number -> Expr (Distr Number)
+  EReturn :: Expr a -> Expr (Distr a)
+  EBind   :: Expr (Distr a) -> (Expr a -> Expr (Distr b)) -> Expr (Distr b)
 
 type CPSKont a r = CPSFuzz a -> CPSFuzz r
 
 type Number = Double
 
-type CFT  a = (Typeable a)
+type CFT a = (Typeable a)
+
 type CFTM m = (Typeable m, Monad m)
 
 data CPSFuzz (a :: *) where
-  CVar :: String -> CPSFuzz a
+  CVar :: CFT a => String -> CPSFuzz a
   CNumLit :: Number -> CPSFuzz Number
   -- We do not CPS these primitive operations.
   CAdd :: CPSFuzz Number -> CPSFuzz Number -> CPSFuzz Number
@@ -116,32 +145,31 @@ data CPSFuzz (a :: *) where
   CEQ :: CPSFuzz Number -> CPSFuzz Number -> CPSFuzz Bool
   CNEQ :: CPSFuzz Number -> CPSFuzz Number -> CPSFuzz Bool
   -- We only CPS bag operations.
-  BMap :: (CFT a, CFT b) => Expr (a -> b) -> CPSFuzz (Bag a) -> CPSKont (Bag b) r -> CPSFuzz r
-  BFilter :: CFT a => Expr (a -> Bool) -> CPSFuzz (Bag a) -> CPSKont (Bag a) r -> CPSFuzz r
-  BSum :: Number -> CPSFuzz (Bag Number) -> CPSKont Number r -> CPSFuzz r
-
-  -- |Avoid code explosion with explicit sharing.
+  BMap :: (CFT a, CFT b, CFT r) => Expr (a -> b) -> CPSFuzz (Bag a) -> CPSKont (Bag b) r -> CPSFuzz r
+  BFilter :: (CFT a, CFT r, VecMonoid r) => Expr (a -> Bool) -> CPSFuzz (Bag a) -> CPSKont (Bag a) r -> CPSFuzz r
+  BSum :: CFT r => Number -> CPSFuzz (Bag Number) -> CPSKont Number r -> CPSFuzz r
+  -- | Avoid code explosion with explicit sharing.
   CShare :: (CFT a, CFT b) => CPSFuzz a -> (CPSFuzz a -> CPSFuzz b) -> CPSFuzz b
+  -- | Deeply embed a monadic return.
+  CReturn ::
+    (CFT a) =>
+    CPSFuzz a ->
+    CPSFuzz (Distr a)
+  -- | Deeply embed a monadic bind.
+  CBind ::
+    (CFT a) =>
+    CPSFuzz (Distr a) ->
+    (CPSFuzz a -> CPSFuzz (Distr b)) ->
+    CPSFuzz (Distr b)
+  CLap :: Number -> CPSFuzz Number -> CPSFuzz (Distr Number)
 
-  -- |Deeply embed a monadic return.
-  CReturn :: (CFT a)
-          => CPSFuzz a -> CPSFuzz (Distr a)
-  -- |Deeply embed a monadic bind.
-  CBind   :: (CFT a)
-          => CPSFuzz (Distr a)
-          -> (CPSFuzz a -> CPSFuzz (Distr b))
-          -> CPSFuzz (Distr b)
-  CLap    :: Number -> CPSFuzz Number -> CPSFuzz (Distr Number)
-
-type BT  a = Typeable a
+type BT a = Typeable a
 
 data BMCS (a :: *) where
-  BVar    :: BT a => String -> BMCS a
+  BVar :: BT a => String -> BMCS a
   BNumLit :: Number -> BMCS Number
-
   BReturn :: BT a => BMCS a -> BMCS (Distr a)
-  BBind   :: BT a => BMCS (Distr a) -> (BMCS a -> BMCS (Distr b)) -> BMCS (Distr b)
-
+  BBind :: BT a => BMCS (Distr a) -> (BMCS a -> BMCS (Distr b)) -> BMCS (Distr b)
   {- TODO: we need something like this eventually, but this may not be the right way to do it.
   -- |Run a green-zone computation on non-sensitive data using unrestricted language.
   Green   :: (BT a, BT b) => Expr (a -> b) -> BMCS (a -> b)
@@ -150,10 +178,12 @@ data BMCS (a :: *) where
   Run ::
     -- | vector representation size
     Int ->
+    -- | Clip bound
+    Number ->
     -- | map function
     Expr (Vec Number -> Vec Number) ->
     -- | release function
-    Expr (Vec Number -> Number) ->
+    Expr (Vec Number -> Distr Number) ->
     BMCS (Distr Number)
 
 -- ###############
@@ -168,7 +198,7 @@ bmap ::
 bmap f bag k = BMap (ELam f) bag k
 
 bfilter ::
-  (CFT a, CFT r) =>
+  (CFT a, CFT r, VecMonoid r) =>
   (Expr a -> Expr Bool) ->
   CPSFuzz (Bag a) ->
   (CPSFuzz (Bag a) -> CPSFuzz r) ->
@@ -272,7 +302,6 @@ b2n :: Bool -> Number
 b2n True = 1.0
 b2n False = 0.0
 
-{-
 infixl 9 %@, `eApp`
 
 (%@) :: (ET a, ET b) => Expr (a -> b) -> Expr a -> Expr b
@@ -280,7 +309,6 @@ infixl 9 %@, `eApp`
 
 eApp :: (ET a, ET b) => Expr (a -> b) -> Expr a -> Expr b
 eApp = EApp
--}
 
 ecomp :: (ET a, ET b, ET c) => Expr (b -> c) -> Expr (a -> b) -> Expr (a -> c)
 ecomp = EComp
@@ -293,6 +321,33 @@ eNum = ENumLit
 
 eIf :: (ET a, Syntactic Expr a) => Expr Bool -> a -> a -> a
 eIf cond t f = fromDeepRepr $ EIf cond (toDeepRepr t) (toDeepRepr f)
+
+eVecExtend :: Expr Int -> Expr (Vec Number) -> Expr (Vec Number)
+eVecExtend = EVecExtend
+
+eVecFocus :: Expr Int -> Expr Int -> Expr (Vec Number) -> Expr (Vec Number)
+eVecFocus start end = EVecFocus start end
+
+eVecConcat :: Expr (Vec Number) -> Expr (Vec Number) -> Expr (Vec Number)
+eVecConcat = EVecConcat
+
+eFst :: (ET a, ET b) => Expr (a, b) -> Expr a
+eFst = EFst
+
+eSnd :: (ET a, ET b) => Expr (a, b) -> Expr b
+eSnd = ESnd
+
+eShare :: (ET a, ET b) => Expr a -> (Expr a -> Expr b) -> Expr b
+eShare = EShare
+
+eJust :: ET a => Expr a -> Expr (Maybe a)
+eJust = EJust
+
+eNothing :: ET a => Expr (Maybe a)
+eNothing = ENothing
+
+eMonoidEmpty :: (ET a, VecMonoid a) => Expr a
+eMonoidEmpty = EMonoidEmpty
 
 instance Num (Vec Number) where
   (Vec as) + (Vec bs) = Vec (zipWith (+) as bs)
@@ -320,19 +375,20 @@ instance (VecStorable a, VecStorable b) => VecStorable (a, b) where
 
 instance VecMonoid a => VecStorable (Maybe a) where
   vecSize = 1 + vecSize @a
+  fromVec (Vec []) = error "fromVec: cannot decode (Maybe a) from empty vector"
   fromVec (Vec (x : more)) =
     if x > 0
-    then Just (fromVec (Vec more))
-    else Nothing
+      then Just (fromVec (Vec more))
+      else Nothing
   asVec (Just a) =
     let Vec a' = asVec a
-    in Vec (1:a')
+     in Vec (1 : a')
   asVec Nothing =
     let Vec a' = asVec (empty @a)
-    in Vec (0:a')
+     in Vec (0 : a')
 
 instance VecMonoid Number where
-  add   = (+)
+  add = (+)
   empty = 0
 
 instance (VecMonoid a, VecMonoid b) => VecMonoid (a, b) where
@@ -341,9 +397,28 @@ instance (VecMonoid a, VecMonoid b) => VecMonoid (a, b) where
 
 instance VecMonoid a => VecMonoid (Maybe a) where
   add (Just a) (Just b) = Just (a `add` b)
-  add (Just a) Nothing  = Just a
-  add Nothing (Just b)  = Just b
-  empty                 = Nothing
+  add (Just a) Nothing = Just a
+  add Nothing (Just b) = Just b
+  add Nothing Nothing = Nothing
+  empty = Nothing
+
+instance Clip Number where
+  clip r a =
+    if a >= bound then bound else if a <= - bound then - bound else a
+    where
+      bound = abs r
+
+instance (Clip a, Clip b) => Clip (a, b) where
+  clip r (a, b) = (clip r a, clip r b)
+
+instance Clip a => Clip (Maybe a) where
+  clip r = fmap (clip r)
+
+mkIfCxtInstances ''VecStorable
+
+mkIfCxtInstances ''VecMonoid
+
+mkIfCxtInstances ''Clip
 
 instance Applicative (Mon f m) where
   pure a = Mon $ \k -> k a
@@ -381,9 +456,31 @@ instance
   fromDeepRepr f = fromDeepRepr . EApp f . toDeepRepr
 
 instance
-  ( Syntactic CPSFuzz a
-  , CFT (DeepRepr a)
-  ) => Syntactic CPSFuzz (Mon CPSFuzz Distr a) where
+  ( Syntactic Expr a,
+    Syntactic Expr b
+  ) => Syntactic Expr (a, b)
+  where
+  type DeepRepr (a, b) = (DeepRepr a, DeepRepr b)
+
+  toDeepRepr (a, b) = EPair (toDeepRepr a) (toDeepRepr b)
+  fromDeepRepr p = (fromDeepRepr (EFst p), fromDeepRepr (ESnd p))
+
+instance
+  ( Syntactic Expr a,
+    CFT (DeepRepr a)
+  ) =>
+  Syntactic Expr (Mon Expr Distr a)
+  where
+  type DeepRepr (Mon Expr Distr a) = Distr (DeepRepr a)
+  toDeepRepr (Mon m) = m (EReturn . toDeepRepr)
+  fromDeepRepr m = Mon $ \k -> EBind m (k . fromDeepRepr)
+
+instance
+  ( Syntactic CPSFuzz a,
+    CFT (DeepRepr a)
+  ) =>
+  Syntactic CPSFuzz (Mon CPSFuzz Distr a)
+  where
   type DeepRepr (Mon CPSFuzz Distr a) = Distr (DeepRepr a)
   toDeepRepr (Mon m) = m (CReturn . toDeepRepr)
   fromDeepRepr m = Mon $ \k -> CBind m (k . fromDeepRepr)
