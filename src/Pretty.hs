@@ -80,45 +80,6 @@ prettyExpr p (EIf c a b) = do
       (text "if" <+> c' <+> a' <+> b')
 prettyExpr _ (EIntLit x) = return $ int x
 prettyExpr _ (ENumLit x) = return $ double x
-prettyExpr p (EBoolToNum a) = do
-  a' <- prettyExpr (precedenceTable "App") a
-  return $
-    parensIf
-      (p > precedenceTable "App")
-      (text "b2n" <+> a')
-prettyExpr p (EFocus start end) = do
-  start' <- prettyExpr (precedenceTable "App") start
-  end' <- prettyExpr (precedenceTable "App" + associativityTable "App") end
-  return $ parensIf (p > precedenceTable "App") $ text "focus" <+> start' <+> end'
-prettyExpr _ EVecSum =
-  return $ text "vecSum"
-prettyExpr p (EVecExtend w) = do
-  w' <- prettyExpr (precedenceTable "App") w
-  return $ parensIf (p > precedenceTable "App") $ text "vecExtend" <+> w'
-prettyExpr p (EVecStore rStart rEnd wStart wEnd f) = do
-  rStart' <- prettyExpr (precedenceTable "App") rStart
-  rEnd' <- prettyExpr (precedenceTable "App" + associativityTable "App") rEnd
-  wStart' <- prettyExpr (precedenceTable "App" + associativityTable "App" * 2) wStart
-  wEnd' <- prettyExpr (precedenceTable "App" + associativityTable "App" * 3) wEnd
-  f' <- prettyExpr (precedenceTable "App" + associativityTable "App" * 4) f
-  return
-    $ parensIf (p > precedenceTable "App")
-    $ text "vecStore" <+> rStart' <+> rEnd' <+> wStart' <+> wEnd' <+> f'
-prettyExpr p (EVecZeros w) = do
-  w' <- prettyExpr (precedenceTable "App") w
-  return
-    $ parensIf (p > precedenceTable "App")
-    $ text "vecZeros" <+> w'
-prettyExpr p (EAsVec (a :: Expr arg)) = do
-  a' <- prettyExpr (precedenceTable "App") a
-  return
-    $ parensIf (p > precedenceTable "App")
-    $ text "asVec" <+> text "@" <> (text $ show (typeRep @arg)) <+> a'
-prettyExpr p (EFromVec a) = do
-  a' <- prettyExpr (precedenceTable "App") a
-  return
-    $ parensIf (p > precedenceTable "App")
-    $ text "fromVec" <+> text "@" <> (text $ show (typeRep @a)) <+> a'
 prettyExpr p (EAdd a b) = prettyBinop p "+" prettyExpr a b
 prettyExpr p (EMinus a b) = prettyBinop p "-" prettyExpr a b
 prettyExpr p (EMult a b) = prettyBinop p "*" prettyExpr a b
