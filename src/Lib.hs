@@ -338,6 +338,12 @@ eJust = EJust
 eNothing :: ET a => Expr (Maybe a)
 eNothing = ENothing
 
+eIsJust :: ET a => Expr (Maybe a) -> Expr Bool
+eIsJust = EIsJust
+
+eFromJust :: ET a => Expr (Maybe a) -> Expr a
+eFromJust = EFromJust
+
 eMonoidEmpty :: (ET a, VecMonoid a) => Expr a
 eMonoidEmpty = EMonoidEmpty
 

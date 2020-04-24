@@ -265,6 +265,11 @@ compile' (CLT a b) = compileBinop' a b (%<)
 compile' (CLE a b) = compileBinop' a b (%<=)
 compile' (CEQ a b) = compileBinop' a b (%==)
 compile' (CNEQ a b) = compileBinop' a b (%/=)
+-- these are not actually correct. we need to check what database the
+-- continuation operated on. if it was the result of bmap, bfilter, bsum, etc,
+-- then we can proceed. otherwise, we need to use something like the
+-- `simdCombine` function above to keep temporary results in a tuple, and later
+-- combine them all at once.
 compile' (BMap (mf :: Expr (row -> row')) db kont) = do
   dbName <- checkDBName db
   lpush
@@ -293,18 +298,41 @@ compile'
     kontEffects <- compile' (kont (CVar resultName))
     lpop
     case kontEffects of
-      Effectful (TypedEffects _ bound (kontMf :: Expr (shouldBeRow -> aggr)) rf) ->
+      Effectful (TypedEffects _ bound
+                  (kontMf :: Expr (shouldBeRow -> aggr))
+                  (rf :: Expr (aggr -> Distr r))) ->
         case eqTypeRep (typeRep @row) (typeRep @shouldBeRow) of
           Just HRefl ->
             let pred' = (fromDeepRepr pred) :: (Expr row -> Expr Bool)
-                newMf row = eIf (pred' row) (eJust row) eNothing
+                rf'   = (fromDeepRepr rf) :: (Expr aggr -> Expr (Distr r))
+                newMf row = eIf (pred' row) (eJust (kontMf %@ row)) eNothing
+                newRf aggrEmpty maybeAggr =
+                  eIf (eIsJust maybeAggr)
+                    (rf' (eFromJust maybeAggr))
+                    (rf' aggrEmpty)
                 -- we need `VecMonoid aggr` here
-                _foobar = ifCxt (Proxy :: Proxy (VecMonoid aggr)) (eMonoidEmpty @aggr) undefined
-             in undefined
+                withAggrEmpty :: VecMonoid aggr => Expr aggr -> m (Compiled r)
+                withAggrEmpty aggrEmpty = do
+                  return . Effectful $
+                    TypedEffects dbName bound
+                      (toDeepRepr newMf)
+                      (toDeepRepr $ newRf aggrEmpty)
+             in ifCxt (Proxy :: Proxy (VecMonoid aggr))
+                  (withAggrEmpty (eMonoidEmpty @aggr))
+                  (throwM $ RequiresVecMonoid (SomeTypeRep (typeRep @aggr)))
           Nothing ->
             throwM $ TypeError (SomeTypeRep (typeRep @row)) (SomeTypeRep (typeRep @shouldBeRow))
       Pure _ ->
         throwM $ InternalError "compile': impossible, the continuation of BFilter has no side effects"
+compile' (BSum clipBound db kont) = do
+  dbName <- checkDBName db
+  lpush
+  resultName <- lfresh "bsum_result"
+  kontEffects <- compile' (kont (CVar resultName))
+  lpop
+  case kontEffects of
+    Effectful (TypedEffects _ bound kontMF kontRF) -> undefined
+    Pure pa -> undefined
 
 checkDBName :: MonadThrow m => CPSFuzz (Bag a) -> m String
 checkDBName (CVar x) = return x
