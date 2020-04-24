@@ -142,6 +142,7 @@ prettyCPSFuzz p (BMap f db k) = do
   return
     $ parensIf (p > precedenceTable "App")
     $ text "bmap" <+> f' <+> db' <+> k'
+{-
 prettyCPSFuzz p (BFilter f db k) = do
   f' <- prettyExpr (precedenceTable "App") f
   db' <- prettyCPSFuzz (precedenceTable "App" + associativityTable "App") db
@@ -152,6 +153,7 @@ prettyCPSFuzz p (BFilter f db k) = do
   return
     $ parensIf (p > precedenceTable "App")
     $ text "bfilter" <+> f' <+> db' <+> k'
+-}
 prettyCPSFuzz p (BSum clip db k) = do
   db' <- prettyCPSFuzz (precedenceTable "App" + associativityTable "App") db
   lpush

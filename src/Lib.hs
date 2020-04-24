@@ -98,6 +98,7 @@ data Expr a :: * where
   ENothing :: ET a => Expr (Maybe a)
   EIsJust :: (ET a) => Expr (Maybe a) -> Expr Bool
   EFromJust :: (ET a) => Expr (Maybe a) -> Expr a
+  {-
   EMonoidEmpty :: (VecMonoid a, ET a) => Expr a
   -- | Grow the vector by the given size.
   EVecExtend :: Expr Int -> Expr (Vec Number) -> Expr (Vec Number)
@@ -105,13 +106,14 @@ data Expr a :: * where
   EVecFocus :: Expr Int -> Expr Int -> Expr (Vec Number) -> Expr (Vec Number)
   -- | Concatenate two vectors.
   EVecConcat :: Expr (Vec Number) -> Expr (Vec Number) -> Expr (Vec Number)
+  -}
   EPair :: (ET a, ET b) => Expr a -> Expr b -> Expr (a, b)
   EFst :: (ET a, ET b) => Expr (a, b) -> Expr a
   ESnd :: (ET a, ET b) => Expr (a, b) -> Expr b
   EShare :: (ET a, ET b) => Expr a -> (Expr a -> Expr b) -> Expr b
   ELap :: Number -> Expr Number -> Expr (Distr Number)
-  EReturn :: Expr a -> Expr (Distr a)
-  EBind :: Expr (Distr a) -> (Expr a -> Expr (Distr b)) -> Expr (Distr b)
+  EReturn :: ET a => Expr a -> Expr (Distr a)
+  EBind :: (ET a) => Expr (Distr a) -> (Expr a -> Expr (Distr b)) -> Expr (Distr b)
 
 type CPSKont a r = CPSFuzz a -> CPSFuzz r
 
@@ -138,7 +140,6 @@ data CPSFuzz (a :: *) where
   CNEQ :: CPSFuzz Number -> CPSFuzz Number -> CPSFuzz Bool
   -- We only CPS bag operations.
   BMap :: (CFT a, CFT b, CFT r) => Expr (a -> b) -> CPSFuzz (Bag a) -> CPSKont (Bag b) r -> CPSFuzz r
-  BFilter :: (CFT a, CFT r) => Expr (a -> Bool) -> CPSFuzz (Bag a) -> CPSKont (Bag a) r -> CPSFuzz r
   BSum :: CFT r => Number -> CPSFuzz (Bag Number) -> CPSKont Number r -> CPSFuzz r
   -- | Avoid code explosion with explicit sharing.
   CShare :: (CFT a, CFT b) => CPSFuzz a -> (CPSFuzz a -> CPSFuzz b) -> CPSFuzz b
@@ -193,9 +194,16 @@ bfilter ::
   (CFT a, CFT r) =>
   (Expr a -> Expr Bool) ->
   CPSFuzz (Bag a) ->
+  (CPSFuzz (Bag (Maybe a)) -> CPSFuzz r) ->
+  CPSFuzz r
+bfilter f bag k = bmap (\row -> eIf (f row) (eJust row) eNothing) bag k
+
+bmapNothing ::
+  (CFT a, CFT r) => Expr a ->
+  CPSFuzz (Bag (Maybe a)) ->
   (CPSFuzz (Bag a) -> CPSFuzz r) ->
   CPSFuzz r
-bfilter f bag k = BFilter (ELam f) bag k
+bmapNothing r bag k = bmap (\row -> eIf (eIsJust row) (eFromJust row) r) bag k
 
 bsum :: CFT r => Number -> CPSFuzz (Bag Number) -> (CPSFuzz Number -> CPSFuzz r) -> CPSFuzz r
 bsum bound bag k = BSum bound bag k
@@ -214,7 +222,9 @@ share a f = fromDeepRepr $ CShare a (toDeepRepr . f)
 bag_filter_sum :: CPSFuzz (Bag Number) -> CPSFuzz Number
 bag_filter_sum db =
   bfilter gt_10 db $
+    \gt_10_db -> bmapNothing 0 gt_10_db $
     \gt_10_db -> bfilter lt_5 db $
+      \lt_5_db -> bmapNothing 0 lt_5_db $
       \lt_5_db -> bsum 20 gt_10_db $
         \gt_10_sum -> bsum 5 lt_5_db $
           \lt_10_sum -> gt_10_sum + lt_10_sum
@@ -239,6 +249,71 @@ bag_map_filter_sum db =
 -- ##################
 -- # INFRASTRUCTURE #
 -- ##################
+
+substCPSFuzz :: forall a r. Typeable r => String -> CPSFuzz a -> CPSFuzz r -> CPSFuzz a
+substCPSFuzz x term needle =
+  case term of
+    CVar y -> if x == y
+              then case eqTypeRep (typeRep @a) (typeRep @r) of
+                     Just HRefl -> needle
+                     Nothing -> term
+              else term
+    CNumLit _ -> term
+    CAdd a b -> CAdd (substCPSFuzz x a needle) (substCPSFuzz x b needle)
+    CMinus a b -> CMinus (substCPSFuzz x a needle) (substCPSFuzz x b needle)
+    CMult a b -> CMult (substCPSFuzz x a needle) (substCPSFuzz x b needle)
+    CDiv a b -> CDiv (substCPSFuzz x a needle) (substCPSFuzz x b needle)
+    CAbs a -> CAbs (substCPSFuzz x a needle)
+    CGT a b -> CGT (substCPSFuzz x a needle) (substCPSFuzz x b needle)
+    CGE a b -> CGE (substCPSFuzz x a needle) (substCPSFuzz x b needle)
+    CLT a b -> CLT (substCPSFuzz x a needle) (substCPSFuzz x b needle)
+    CLE a b -> CLE (substCPSFuzz x a needle) (substCPSFuzz x b needle)
+    CEQ a b -> CEQ (substCPSFuzz x a needle) (substCPSFuzz x b needle)
+    CNEQ a b -> CNEQ (substCPSFuzz x a needle) (substCPSFuzz x b needle)
+    -- f as an `Expr` cannot capture any variable from `CPSFuzz`, so we do not subst into f
+    BMap f db kont -> BMap f (substCPSFuzz x db needle) (\r -> substCPSFuzz x (kont r) needle)
+    BSum c db kont -> BSum c (substCPSFuzz x db needle) (\r -> substCPSFuzz x (kont r) needle)
+    CShare a f -> CShare (substCPSFuzz x a needle) (\r -> substCPSFuzz x (f r) needle)
+    CReturn a -> CReturn (substCPSFuzz x a needle)
+    CBind m f -> CBind (substCPSFuzz x m needle) (\r -> substCPSFuzz x (f r) needle)
+    CLap w c -> CLap w (substCPSFuzz x c needle)
+
+substExpr :: forall a r. Typeable r => String -> Expr a -> Expr r -> Expr a
+substExpr x term needle =
+  case term of
+    EVar y -> if x == y
+              then case eqTypeRep (typeRep @a) (typeRep @r) of
+                     Just HRefl -> needle
+                     Nothing -> term
+              else term
+    ELam f -> ELam $ \r -> substExpr x (f r) needle
+    EApp f a -> EApp (substExpr x f needle) (substExpr x a needle)
+    EComp g f -> EComp (substExpr x g needle) (substExpr x f needle)
+    EIf cond a b -> EIf (substExpr x cond needle) (substExpr x a needle) (substExpr x b needle)
+    EIntLit _ -> term
+    ENumLit _ -> term
+    EAdd a b -> EAdd (substExpr x a needle) (substExpr x b needle)
+    EMinus a b -> EMinus (substExpr x a needle) (substExpr x b needle)
+    EMult a b -> EMult (substExpr x a needle) (substExpr x b needle)
+    EDiv a b -> EDiv (substExpr x a needle) (substExpr x b needle)
+    EAbs a -> EAbs (substExpr x a needle)
+    EGT a b -> EGT (substExpr x a needle) (substExpr x b needle)
+    EGE a b -> EGE (substExpr x a needle) (substExpr x b needle)
+    ELT a b -> ELT (substExpr x a needle) (substExpr x b needle)
+    ELE a b -> ELE (substExpr x a needle) (substExpr x b needle)
+    EEQ a b -> EEQ (substExpr x a needle) (substExpr x b needle)
+    ENEQ a b -> ENEQ (substExpr x a needle) (substExpr x b needle)
+    EJust a -> EJust (substExpr x a needle)
+    ENothing -> ENothing
+    EIsJust a -> EIsJust (substExpr x a needle)
+    EFromJust a -> EFromJust (substExpr x a needle)
+    EPair a b -> EPair (substExpr x a needle) (substExpr x b needle)
+    EFst a -> EFst (substExpr x a needle)
+    ESnd a -> ESnd (substExpr x a needle)
+    EShare a f -> EShare (substExpr x a needle) (\r -> substExpr x (f r) needle)
+    ELap c w -> ELap c (substExpr x w needle)
+    EReturn a -> EReturn (substExpr x a needle)
+    EBind m f -> EBind (substExpr x m needle) (\r -> substExpr x (f r) needle)
 
 instance SynOrd (Expr Number) where
   type Carrier (Expr Number) = Expr
@@ -314,6 +389,7 @@ eNum = ENumLit
 eIf :: (ET a, Syntactic Expr a) => Expr Bool -> a -> a -> a
 eIf cond t f = fromDeepRepr $ EIf cond (toDeepRepr t) (toDeepRepr f)
 
+{-
 eVecExtend :: Expr Int -> Expr (Vec Number) -> Expr (Vec Number)
 eVecExtend = EVecExtend
 
@@ -322,6 +398,7 @@ eVecFocus start end = EVecFocus start end
 
 eVecConcat :: Expr (Vec Number) -> Expr (Vec Number) -> Expr (Vec Number)
 eVecConcat = EVecConcat
+-}
 
 eFst :: (ET a, ET b) => Expr (a, b) -> Expr a
 eFst = EFst
@@ -344,8 +421,10 @@ eIsJust = EIsJust
 eFromJust :: ET a => Expr (Maybe a) -> Expr a
 eFromJust = EFromJust
 
+{-
 eMonoidEmpty :: (ET a, VecMonoid a) => Expr a
 eMonoidEmpty = EMonoidEmpty
+-}
 
 instance Num (Vec Number) where
   (Vec as) + (Vec bs) = Vec (zipWith (+) as bs)
