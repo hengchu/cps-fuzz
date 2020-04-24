@@ -36,33 +36,25 @@ makeLensesWith abbreviatedFields ''EffectGraph
 emptyEG :: EffectGraph
 emptyEG = EffectGraph M.empty M.empty
 
-data Compiled r
-  = Compiled
-      { _cGraph :: EffectGraph,
-        _cSink :: Expr r
+-- |This is the reification of BMCS effects in a `CPSFuzz` program.
+data MCSEffect r
+  = MCSEffect
+      { _hcGraph :: EffectGraph, -- ^A map of (src, dst) variable names, and how
+                                 -- to compute dst from src.
+        _hcSink :: CPSFuzz r -- ^A non-monadic expression that combines variable
+                             -- names from `graph`, and yields the final output
+                             -- of the computation graph.
       }
 
-data AlmostCompiled r
-  = AlmostCompiled
-      { _hcGraph :: EffectGraph,
-        _hcSink :: CPSFuzz r
-      }
+makeLensesWith abbreviatedFields ''MCSEffect
 
-pureAlmostCompiled :: CPSFuzz r -> AlmostCompiled r
-pureAlmostCompiled = AlmostCompiled emptyEG
-
-data CompiledChain (r :: *) where
-  CSing :: Compiled r -> CompiledChain r
-  CCons :: Compiled a -> CompiledChain (a -> b) -> CompiledChain b
-  CSnoc :: CompiledChain a -> Compiled (a -> b) -> CompiledChain b
-
-data AlmostCompiledChain (r :: *) where
-  ACSing :: AlmostCompiled r -> AlmostCompiledChain r
-  ACCons :: AlmostCompiled a -> AlmostCompiledChain (a -> b) -> AlmostCompiledChain b
-  ACSnoc :: AlmostCompiledChain a -> AlmostCompiled (a -> b) -> AlmostCompiledChain b
-
-makeLensesWith abbreviatedFields ''Compiled
-makeLensesWith abbreviatedFields ''AlmostCompiled
+-- |This is the reification of the monadic structure of a `CPSFuzz` program.
+data MCSEffectDistr (r :: *) where
+  ACReturn :: MCSEffect r
+           -> MCSEffectDistr r
+  ACBind   :: MCSEffectDistr a
+           -> (MCSEffect a -> MCSEffectDistr r)
+           -> MCSEffectDistr r
 
 data CompilerError
   = InternalError String
@@ -120,28 +112,12 @@ insert m dir@(from, to) e =
               from
     Just _ -> throwM . InternalError $ printf "direction %s is duplicated" (show dir)
 
-compileBinop' ::
-  (MonadThrow m, FreshM m) =>
-  CPSFuzz a ->
-  CPSFuzz b ->
-  (CPSFuzz a -> CPSFuzz b -> CPSFuzz r) ->
-  m (AlmostCompiled r)
-compileBinop' a b f = do
-  a' <- compilePure' a
-  b' <- compilePure' b
-  g <- merge (a' ^. graph) (b' ^. graph)
-  return $ AlmostCompiled g (f (a' ^. sink) (b' ^. sink))
-
--- |Compiles non-monadic (but potentially has BMCS effects) `CPSFuzz` into a DAG.
-compilePure' :: (MonadThrow m, FreshM m) => CPSFuzz r -> m (AlmostCompiled r)
+-- |Top-level function that compiles the pure fragment of `CPSFuzz`.
+compilePure' :: (MonadThrow m, FreshM m) => CPSFuzz r -> m (MCSEffect r)
 compilePure' = undefined
 
--- |Compiles monadic `CPSFuzz` into a chain of DAGs.
-compileMonadic' :: (MonadThrow m, FreshM m) => CPSFuzz (Distr r) -> m (AlmostCompiledChain r)
-compileMonadic' = undefined
-
 -- |Top-level function that compiles a whole `CPSFuzz` program into a DAG chain.
-compile' :: (MonadThrow m, FreshM m) => CPSFuzz r -> m (AlmostCompiledChain r)
+compile' :: (MonadThrow m, FreshM m) => CPSFuzz (Distr r) -> m (MCSEffectDistr r)
 compile' = undefined
 
 checkDbName :: MonadThrow m => CPSFuzz (Bag r) -> m String
