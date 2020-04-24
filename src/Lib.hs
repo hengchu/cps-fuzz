@@ -138,7 +138,7 @@ data CPSFuzz (a :: *) where
   CNEQ :: CPSFuzz Number -> CPSFuzz Number -> CPSFuzz Bool
   -- We only CPS bag operations.
   BMap :: (CFT a, CFT b, CFT r) => Expr (a -> b) -> CPSFuzz (Bag a) -> CPSKont (Bag b) r -> CPSFuzz r
-  BFilter :: (CFT a, CFT r, VecMonoid r) => Expr (a -> Bool) -> CPSFuzz (Bag a) -> CPSKont (Bag a) r -> CPSFuzz r
+  BFilter :: (CFT a, CFT r, VecMonoid a) => Expr (a -> Bool) -> CPSFuzz (Bag a) -> CPSKont (Bag a) r -> CPSFuzz r
   BSum :: CFT r => Number -> CPSFuzz (Bag Number) -> CPSKont Number r -> CPSFuzz r
   -- | Avoid code explosion with explicit sharing.
   CShare :: (CFT a, CFT b) => CPSFuzz a -> (CPSFuzz a -> CPSFuzz b) -> CPSFuzz b
@@ -190,7 +190,7 @@ bmap ::
 bmap f bag k = BMap (ELam f) bag k
 
 bfilter ::
-  (CFT a, CFT r, VecMonoid r) =>
+  (CFT a, CFT r, VecMonoid a) =>
   (Expr a -> Expr Bool) ->
   CPSFuzz (Bag a) ->
   (CPSFuzz (Bag a) -> CPSFuzz r) ->

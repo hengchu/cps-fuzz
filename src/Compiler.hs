@@ -283,9 +283,9 @@ compile' (BMap (mf :: Expr (row -> row')) db kont) = do
       throwM $ InternalError "compile': impossible, the continuation of BMap has no side effects"
 compile'
   ( BFilter
+      -- We know `VecMonoid row` here
       (pred :: Expr (row -> Bool))
       db
-      -- We know (VecMonoid r) here
       (kont :: (CPSFuzz (Bag row) -> CPSFuzz r))
     ) = do
     dbName <- checkDBName db
@@ -298,7 +298,7 @@ compile'
         case eqTypeRep (typeRep @row) (typeRep @shouldBeRow) of
           Just HRefl ->
             let pred' = (fromDeepRepr pred) :: (Expr row -> Expr Bool)
-                newMf row = eIf (pred' row) (eJust row) eNothing
+                newMf row = eIf (pred' row) row eMonoidEmpty
              in undefined
           Nothing ->
             throwM $ TypeError (SomeTypeRep (typeRep @row)) (SomeTypeRep (typeRep @shouldBeRow))
