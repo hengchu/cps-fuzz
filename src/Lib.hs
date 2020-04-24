@@ -199,7 +199,8 @@ bfilter ::
 bfilter f bag k = bmap (\row -> eIf (f row) (eJust row) eNothing) bag k
 
 bmapNothing ::
-  (CFT a, CFT r) => Expr a ->
+  (CFT a, CFT r) =>
+  Expr a ->
   CPSFuzz (Bag (Maybe a)) ->
   (CPSFuzz (Bag a) -> CPSFuzz r) ->
   CPSFuzz r
@@ -223,11 +224,11 @@ bag_filter_sum :: CPSFuzz (Bag Number) -> CPSFuzz Number
 bag_filter_sum db =
   bfilter gt_10 db $
     \gt_10_db -> bmapNothing 0 gt_10_db $
-    \gt_10_db -> bfilter lt_5 db $
-      \lt_5_db -> bmapNothing 0 lt_5_db $
-      \lt_5_db -> bsum 20 gt_10_db $
-        \gt_10_sum -> bsum 5 lt_5_db $
-          \lt_10_sum -> gt_10_sum + lt_10_sum
+      \gt_10_db -> bfilter lt_5 db $
+        \lt_5_db -> bmapNothing 0 lt_5_db $
+          \lt_5_db -> bsum 20 gt_10_db $
+            \gt_10_sum -> bsum 5 lt_5_db $
+              \lt_10_sum -> gt_10_sum + lt_10_sum
   where
     gt_10 :: Expr Number -> Expr Bool
     gt_10 v = v %> 10
@@ -253,11 +254,12 @@ bag_map_filter_sum db =
 substCPSFuzz :: forall a r. Typeable r => String -> CPSFuzz a -> CPSFuzz r -> CPSFuzz a
 substCPSFuzz x term needle =
   case term of
-    CVar y -> if x == y
-              then case eqTypeRep (typeRep @a) (typeRep @r) of
-                     Just HRefl -> needle
-                     Nothing -> term
-              else term
+    CVar y ->
+      if x == y
+        then case eqTypeRep (typeRep @a) (typeRep @r) of
+          Just HRefl -> needle
+          Nothing -> term
+        else term
     CNumLit _ -> term
     CAdd a b -> CAdd (substCPSFuzz x a needle) (substCPSFuzz x b needle)
     CMinus a b -> CMinus (substCPSFuzz x a needle) (substCPSFuzz x b needle)
@@ -281,11 +283,12 @@ substCPSFuzz x term needle =
 substExpr :: forall a r. Typeable r => String -> Expr a -> Expr r -> Expr a
 substExpr x term needle =
   case term of
-    EVar y -> if x == y
-              then case eqTypeRep (typeRep @a) (typeRep @r) of
-                     Just HRefl -> needle
-                     Nothing -> term
-              else term
+    EVar y ->
+      if x == y
+        then case eqTypeRep (typeRep @a) (typeRep @r) of
+          Just HRefl -> needle
+          Nothing -> term
+        else term
     ELam f -> ELam $ \r -> substExpr x (f r) needle
     EApp f a -> EApp (substExpr x f needle) (substExpr x a needle)
     EComp g f -> EComp (substExpr x g needle) (substExpr x f needle)

@@ -3,45 +3,50 @@ module Compiler where
 import Control.Lens
 import Control.Monad.Catch
 import Control.Monad.State.Strict
+import qualified Data.Map.Strict as M
 import Data.Proxy
 import IfCxt
 import Lib
 import Names
-import Type.Reflection
-import qualified Data.Map.Strict as M
 import Text.Printf
+import Type.Reflection
 
 data Edge (from :: *) (to :: *) where
   Map :: Expr (from -> to) -> Edge (Bag from) (Bag to)
   Sum :: Number -> Edge (Bag sum) sum
 
 data AnyEdge :: * where
-  AnyEdge :: (Typeable from, Typeable to)
-          => Edge from to -> AnyEdge
+  AnyEdge ::
+    (Typeable from, Typeable to) =>
+    Edge from to ->
+    AnyEdge
 
--- |A directed edge.
+-- | A directed edge.
 type Direction = (String, String)
 
--- |A DAG that holds the structure of the effects.
-data EffectGraph = EffectGraph {
-  _egEdges :: M.Map Direction AnyEdge,
-    _egNeighbors :: M.Map String [String]
-  }
+-- | A DAG that holds the structure of the effects.
+data EffectGraph
+  = EffectGraph
+      { _egEdges :: M.Map Direction AnyEdge,
+        _egNeighbors :: M.Map String [String]
+      }
 
 makeLensesWith abbreviatedFields ''EffectGraph
 
 emptyEG :: EffectGraph
 emptyEG = EffectGraph M.empty M.empty
 
-data Compiled r = Compiled {
-  _cGraph :: EffectGraph
-  , _cSink :: Expr r
-  }
+data Compiled r
+  = Compiled
+      { _cGraph :: EffectGraph,
+        _cSink :: Expr r
+      }
 
-data AlmostCompiled r = AlmostCompiled {
-  _hcGraph :: EffectGraph
-  , _hcSink :: CPSFuzz r
-  }
+data AlmostCompiled r
+  = AlmostCompiled
+      { _hcGraph :: EffectGraph,
+        _hcSink :: CPSFuzz r
+      }
 
 pureAlmostCompiled :: CPSFuzz r -> AlmostCompiled r
 pureAlmostCompiled = AlmostCompiled emptyEG
@@ -49,10 +54,12 @@ pureAlmostCompiled = AlmostCompiled emptyEG
 data CompiledChain (r :: *) where
   CSing :: Compiled r -> CompiledChain r
   CCons :: Compiled a -> CompiledChain (a -> b) -> CompiledChain b
+  CSnoc :: CompiledChain a -> Compiled (a -> b) -> CompiledChain b
 
 data AlmostCompiledChain (r :: *) where
   ACSing :: AlmostCompiled r -> AlmostCompiledChain r
   ACCons :: AlmostCompiled a -> AlmostCompiledChain (a -> b) -> AlmostCompiledChain b
+  ACSnoc :: AlmostCompiledChain a -> AlmostCompiled (a -> b) -> AlmostCompiledChain b
 
 makeLensesWith abbreviatedFields ''Compiled
 makeLensesWith abbreviatedFields ''AlmostCompiled
@@ -76,18 +83,20 @@ newtype Compiler a = Compiler {runCompiler_ :: StateT NameState (Either SomeExce
 runCompiler :: Compiler a -> Either SomeException a
 runCompiler = flip evalStateT emptyNameState . runCompiler_
 
--- |Takes the disjoint union of two maps.
-mergeEdges :: MonadThrow m
-           => M.Map Direction AnyEdge
-           -> M.Map Direction AnyEdge
-           -> m (M.Map Direction AnyEdge)
+-- | Takes the disjoint union of two maps.
+mergeEdges ::
+  MonadThrow m =>
+  M.Map Direction AnyEdge ->
+  M.Map Direction AnyEdge ->
+  m (M.Map Direction AnyEdge)
 mergeEdges m1 m2 = do
   if M.disjoint m1 m2
     then return (M.union m1 m2)
     else throwM . InternalError $ printf "directions %s are duplicated" (show duplicates)
-    where duplicates = fmap fst (M.toList $ M.intersection m1 m2)
+  where
+    duplicates = fmap fst (M.toList $ M.intersection m1 m2)
 
--- |Simply takes the union of neighbors from both sides.
+-- | Simply takes the union of neighbors from both sides.
 mergeNeighbors :: M.Map String [String] -> M.Map String [String] -> M.Map String [String]
 mergeNeighbors = M.unionWith (++)
 
@@ -99,63 +108,41 @@ merge m1 m2 = do
 insert :: MonadThrow m => EffectGraph -> Direction -> AnyEdge -> m EffectGraph
 insert m dir@(from, to) e =
   case M.lookup dir (m ^. edges) of
-    Nothing -> return $
-      m & edges     %~ M.insert dir e
-        & neighbors %~ M.alter (\case
-                                   Nothing -> Just [to]
-                                   Just ns -> Just (to:ns))
-                               from
+    Nothing ->
+      return $
+        m & edges %~ M.insert dir e
+          & neighbors
+            %~ M.alter
+              ( \case
+                  Nothing -> Just [to]
+                  Just ns -> Just (to : ns)
+              )
+              from
     Just _ -> throwM . InternalError $ printf "direction %s is duplicated" (show dir)
 
-compileBinop' :: (MonadThrow m, FreshM m)
-  => CPSFuzz a -> CPSFuzz b -> (CPSFuzz a -> CPSFuzz b -> CPSFuzz r) -> m (AlmostCompiled r)
+compileBinop' ::
+  (MonadThrow m, FreshM m) =>
+  CPSFuzz a ->
+  CPSFuzz b ->
+  (CPSFuzz a -> CPSFuzz b -> CPSFuzz r) ->
+  m (AlmostCompiled r)
 compileBinop' a b f = do
-  a' <- compile' a
-  b' <- compile' b
+  a' <- compilePure' a
+  b' <- compilePure' b
   g <- merge (a' ^. graph) (b' ^. graph)
   return $ AlmostCompiled g (f (a' ^. sink) (b' ^. sink))
 
-compile' :: (MonadThrow m, FreshM m) => CPSFuzz r -> m (AlmostCompiled r)
-compile' (CVar x)    = return $ pureAlmostCompiled (CVar x)
-compile' (CNumLit x) = return $ pureAlmostCompiled (CNumLit x)
-compile' (CAdd a b)  = compileBinop' a b (+)
-compile' (CMinus a b) = compileBinop' a b (-)
-compile' (CMult a b) = compileBinop' a b (*)
-compile' (CDiv a b) = compileBinop' a b (/)
-compile' (CAbs a) = do
-  a' <- compile' a
-  return $ a' & sink %~ abs
-compile' (CGT a b) = compileBinop' a b (%>)
-compile' (CGE a b) = compileBinop' a b (%>=)
-compile' (CLT a b) = compileBinop' a b (%<)
-compile' (CLE a b) = compileBinop' a b (%<=)
-compile' (CEQ a b) = compileBinop' a b (%==)
-compile' (CNEQ a b) = compileBinop' a b (%/=)
-compile' (BMap f db kont) = do
-  dbEffects <- compile' db
-  srcName <- checkDbName (dbEffects ^. sink)
-  tgtName <- gfresh "bmap_result"
-  kontEffects <- compile' (kont (CVar tgtName))
-  combinedEffects <- merge (dbEffects ^. graph) (kontEffects ^. graph)
-  totalEffects <- insert combinedEffects (srcName, tgtName) (AnyEdge (Map f))
-  return $ AlmostCompiled totalEffects (kontEffects ^. sink)
-compile' (BSum clip (db :: CPSFuzz (Bag sum)) kont) = do
-  dbEffects <- compile' db
-  srcName <- checkDbName (dbEffects ^. sink)
-  tgtName <- gfresh "bsum_result"
-  kontEffects <- compile' (kont (CVar tgtName))
-  combinedEffects <- merge (dbEffects ^. graph) (kontEffects ^. graph)
-  totalEffects <- insert combinedEffects (srcName, tgtName) (AnyEdge @(Bag sum) @sum (Sum clip))
-  return $ AlmostCompiled totalEffects (kontEffects ^. sink)
-compile' (CShare v f) = do
-  AlmostCompiled vGraph vSink <- compile' v
-  AlmostCompiled fvGraph fvSink <- compile' (f vSink)
-  totalEffects <- merge vGraph fvGraph
-  return $ AlmostCompiled totalEffects fvSink
-compile' (CReturn v) = do
-  AlmostCompiled g s <- compile' v
-  return $ AlmostCompiled g (CReturn s)
-compile' (CBind m f) = undefined
+-- |Compiles non-monadic (but potentially has BMCS effects) `CPSFuzz` into a DAG.
+compilePure' :: (MonadThrow m, FreshM m) => CPSFuzz r -> m (AlmostCompiled r)
+compilePure' = undefined
+
+-- |Compiles monadic `CPSFuzz` into a chain of DAGs.
+compileMonadic' :: (MonadThrow m, FreshM m) => CPSFuzz (Distr r) -> m (AlmostCompiledChain r)
+compileMonadic' = undefined
+
+-- |Top-level function that compiles a whole `CPSFuzz` program into a DAG chain.
+compile' :: (MonadThrow m, FreshM m) => CPSFuzz r -> m (AlmostCompiledChain r)
+compile' = undefined
 
 checkDbName :: MonadThrow m => CPSFuzz (Bag r) -> m String
 checkDbName (CVar x) = return x
