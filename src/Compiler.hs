@@ -283,7 +283,6 @@ compile' (BMap (mf :: Expr (row -> row')) db kont) = do
       throwM $ InternalError "compile': impossible, the continuation of BMap has no side effects"
 compile'
   ( BFilter
-      -- We know `VecMonoid row` here
       (pred :: Expr (row -> Bool))
       db
       (kont :: (CPSFuzz (Bag row) -> CPSFuzz r))
@@ -294,11 +293,13 @@ compile'
     kontEffects <- compile' (kont (CVar resultName))
     lpop
     case kontEffects of
-      Effectful (TypedEffects _ bound (kontMf :: Expr (shouldBeRow -> _)) rf) ->
+      Effectful (TypedEffects _ bound (kontMf :: Expr (shouldBeRow -> aggr)) rf) ->
         case eqTypeRep (typeRep @row) (typeRep @shouldBeRow) of
           Just HRefl ->
             let pred' = (fromDeepRepr pred) :: (Expr row -> Expr Bool)
-                newMf row = eIf (pred' row) row eMonoidEmpty
+                newMf row = eIf (pred' row) (eJust row) eNothing
+                -- we need `VecMonoid aggr` here
+                _foobar = ifCxt (Proxy :: Proxy (VecMonoid aggr)) (eMonoidEmpty @aggr) undefined
              in undefined
           Nothing ->
             throwM $ TypeError (SomeTypeRep (typeRep @row)) (SomeTypeRep (typeRep @shouldBeRow))
