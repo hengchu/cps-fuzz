@@ -27,7 +27,12 @@ type Direction = (String, String)
 -- | A DAG that holds the structure of the effects.
 data EffectGraph
   = EffectGraph
-      { _egEdges :: M.Map Direction AnyEdge,
+      { -- | The computation edges from some
+        --  `src` variable to `dst`
+        --  variable.
+        _egEdges :: M.Map Direction AnyEdge,
+        -- | All destinations of any given
+        --  `src`
         _egNeighbors :: M.Map String [String]
       }
 
@@ -36,25 +41,29 @@ makeLensesWith abbreviatedFields ''EffectGraph
 emptyEG :: EffectGraph
 emptyEG = EffectGraph M.empty M.empty
 
--- |This is the reification of BMCS effects in a `CPSFuzz` program.
+-- | This is the reification of BMCS effects in a `CPSFuzz` program.
 data MCSEffect r
   = MCSEffect
-      { _hcGraph :: EffectGraph, -- ^A map of (src, dst) variable names, and how
-                                 -- to compute dst from src.
-        _hcSink :: CPSFuzz r -- ^A non-monadic expression that combines variable
-                             -- names from `graph`, and yields the final output
-                             -- of the computation graph.
+      { -- | A map of (src, dst) variable names, and how
+        --  to compute dst from src.
+        _hcGraph :: EffectGraph,
+        -- | A non-monadic expression that combines variable
+        --  names from `graph`, and yields the final output
+        --  of the computation graph.
+        _hcSink :: CPSFuzz r
       }
 
 makeLensesWith abbreviatedFields ''MCSEffect
 
--- |This is the reification of the monadic structure of a `CPSFuzz` program.
+-- | This is the reification of the monadic structure of a `CPSFuzz` program.
 data MCSEffectDistr (r :: *) where
-  ACReturn :: MCSEffect r
-           -> MCSEffectDistr r
-  ACBind   :: MCSEffectDistr a
-           -> (MCSEffect a -> MCSEffectDistr r)
-           -> MCSEffectDistr r
+  ACReturn ::
+    MCSEffect r ->
+    MCSEffectDistr r
+  ACBind ::
+    MCSEffectDistr a ->
+    (MCSEffect a -> MCSEffectDistr r) ->
+    MCSEffectDistr r
 
 data CompilerError
   = InternalError String
@@ -112,11 +121,11 @@ insert m dir@(from, to) e =
               from
     Just _ -> throwM . InternalError $ printf "direction %s is duplicated" (show dir)
 
--- |Top-level function that compiles the pure fragment of `CPSFuzz`.
+-- | Top-level function that compiles the pure fragment of `CPSFuzz`.
 compilePure' :: (MonadThrow m, FreshM m) => CPSFuzz r -> m (MCSEffect r)
 compilePure' = undefined
 
--- |Top-level function that compiles a whole `CPSFuzz` program into a DAG chain.
+-- | Top-level function that compiles a whole `CPSFuzz` program into a DAG chain.
 compile' :: (MonadThrow m, FreshM m) => CPSFuzz (Distr r) -> m (MCSEffectDistr r)
 compile' = undefined
 
