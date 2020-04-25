@@ -33,13 +33,15 @@ data EffectGraph
         _egEdges :: M.Map Direction AnyEdge,
         -- | All destinations of any given
         --  `src`
-        _egNeighbors :: M.Map String [String]
+        _egNeighbors :: M.Map String [String],
+        -- | A map from destination to its src.
+        _egParents :: M.Map String String
       }
 
 makeLensesWith abbreviatedFields ''EffectGraph
 
 emptyEG :: EffectGraph
-emptyEG = EffectGraph M.empty M.empty
+emptyEG = EffectGraph M.empty M.empty M.empty
 
 -- | This is the reification of BMCS effects in a `CPSFuzz` program.
 data MCSEffect r
@@ -53,17 +55,18 @@ data MCSEffect r
         _mcsSink :: CPSFuzz r
       }
 
-data EffectGraphs =
-  Sing EffectGraph
+data EffectGraphs
+  = Sing EffectGraph
   | Bind EffectGraphs EffectGraphs
 
 data MCSEffects r
-  = MCSEffects {
-    _mcsGraphs :: EffectGraphs,
-    _mcsSink :: CPSFuzz r
-    }
+  = MCSEffects
+      { _mcsGraphs :: EffectGraphs,
+        _mcsSink :: CPSFuzz r
+      }
 
 makeLensesWith abbreviatedFields ''MCSEffect
+
 makeLensesWith abbreviatedFields ''MCSEffects
 
 data CompilerError
@@ -86,15 +89,19 @@ runCompiler :: Compiler a -> Either SomeException a
 runCompiler = flip evalStateT emptyNameState . runCompiler_
 
 postprocessEffects ::
-  (MonadThrow m, FreshM m)
-  => (EffectGraph -> m EffectGraph) -> EffectGraphs -> m EffectGraphs
-postprocessEffects act (Sing g)   = Sing <$> act g
+  (MonadThrow m, FreshM m) =>
+  (EffectGraph -> m EffectGraph) ->
+  EffectGraphs ->
+  m EffectGraphs
+postprocessEffects act (Sing g) = Sing <$> act g
 postprocessEffects act (Bind a b) = Bind a <$> postprocessEffects act b
 
 preprocessEffects ::
-  (MonadThrow m, FreshM m)
-  => (EffectGraph -> m EffectGraph) -> EffectGraphs -> m EffectGraphs
-preprocessEffects act (Sing g)   = Sing <$> act g
+  (MonadThrow m, FreshM m) =>
+  (EffectGraph -> m EffectGraph) ->
+  EffectGraphs ->
+  m EffectGraphs
+preprocessEffects act (Sing g) = Sing <$> act g
 preprocessEffects act (Bind a b) = Bind <$> preprocessEffects act a <*> pure b
 
 -- | Takes the disjoint union of two maps.
@@ -114,10 +121,20 @@ mergeEdges m1 m2 = do
 mergeNeighbors :: M.Map String [String] -> M.Map String [String] -> M.Map String [String]
 mergeNeighbors = M.unionWith (++)
 
+mergeParents ::
+  MonadThrow m => M.Map String String -> M.Map String String -> m (M.Map String String)
+mergeParents m1 m2 = do
+  if M.disjoint m1 m2
+    then return (M.union m1 m2)
+    else throwM . InternalError $ printf "nodes %s have multiple parents" (show duplicates)
+  where
+    duplicates = fmap fst (M.toList $ M.intersection m1 m2)
+
 merge :: MonadThrow m => EffectGraph -> EffectGraph -> m EffectGraph
 merge m1 m2 = do
   m <- mergeEdges (m1 ^. edges) (m2 ^. edges)
-  return $ EffectGraph m (mergeNeighbors (m1 ^. neighbors) (m2 ^. neighbors))
+  p <- mergeParents (m1 ^. parents) (m2 ^. parents)
+  return $ EffectGraph m (mergeNeighbors (m1 ^. neighbors) (m2 ^. neighbors)) p
 
 coalesceEffects :: MonadThrow m => EffectGraphs -> m EffectGraph
 coalesceEffects (Sing g) = return g
@@ -134,15 +151,20 @@ insert :: MonadThrow m => EffectGraph -> Direction -> AnyEdge -> m EffectGraph
 insert m dir@(from, to) e =
   case M.lookup dir (m ^. edges) of
     Nothing ->
-      return $
-        m & edges %~ M.insert dir e
-          & neighbors
-            %~ M.alter
-              ( \case
-                  Nothing -> Just [to]
-                  Just ns -> Just (to : ns)
-              )
-              from
+      case M.lookup to (m ^. parents) of
+        Nothing ->
+          return $
+            m & edges %~ M.insert dir e
+              & neighbors
+                %~ M.alter
+                  ( \case
+                      Nothing -> Just [to]
+                      Just ns -> Just (to : ns)
+                  )
+                  from
+              & parents
+                %~ M.insert to from
+        Just _ -> throwM . InternalError $ printf "%s already has a parent" to
     Just _ -> throwM . InternalError $ printf "direction %s is duplicated" (show dir)
 
 isPure :: forall r. CPSFuzz r -> Bool
