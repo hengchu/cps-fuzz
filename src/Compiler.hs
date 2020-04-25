@@ -47,23 +47,13 @@ data MCSEffect r
       { -- | A map of (src, dst) variable names, and how
         --  to compute dst from src.
         _hcGraph :: EffectGraph,
-        -- | A non-monadic expression that combines variable
+        -- | An expression that combines variable
         --  names from `graph`, and yields the final output
         --  of the computation graph.
         _hcSink :: CPSFuzz r
       }
 
 makeLensesWith abbreviatedFields ''MCSEffect
-
--- | This is the reification of the monadic structure of a `CPSFuzz` program.
-data MCSEffectDistr (r :: *) where
-  ACReturn ::
-    MCSEffect r ->
-    MCSEffectDistr r
-  ACBind ::
-    MCSEffectDistr a ->
-    (MCSEffect a -> MCSEffectDistr r) ->
-    MCSEffectDistr r
 
 data CompilerError
   = InternalError String
@@ -121,17 +111,21 @@ insert m dir@(from, to) e =
               from
     Just _ -> throwM . InternalError $ printf "direction %s is duplicated" (show dir)
 
--- | Top-level function that compiles the pure fragment of `CPSFuzz`.
-compilePure' :: (MonadThrow m, FreshM m) => CPSFuzz r -> m (MCSEffect r)
-compilePure' = undefined
-
--- | Top-level function that compiles a whole `CPSFuzz` program into a DAG chain.
-compile' :: (MonadThrow m, FreshM m) => CPSFuzz (Distr r) -> m (MCSEffectDistr r)
-compile' = undefined
+isPure :: forall r. CPSFuzz r -> Bool
+isPure (CVar _) =
+  fst (splitApps (typeRep @r)) /= fst (splitApps (typeRep @Distr))
+isPure (BMap _ _ kont) = isPure (kont (CVar secretVarName))
+isPure (BSum _ _ kont) = isPure (kont (CVar secretVarName))
+isPure (CShare v f) = isPure v && isPure (f (CVar secretVarName))
+isPure (CReturn _) = False
+isPure (CBind _ _) = False
+isPure (CLap _ _) = False
+isPure _ = True
 
 checkDbName :: MonadThrow m => CPSFuzz (Bag r) -> m String
 checkDbName (CVar x) = return x
-checkDbName _ = throwM $ InternalError "checkDbName: compiled db terms should always be variables"
+checkDbName _ =
+  throwM $ InternalError "checkDbName: compiled db terms should always be variables"
 
 -- ##################
 -- # INFRASTRUCTURE #
