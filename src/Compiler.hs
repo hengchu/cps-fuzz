@@ -46,14 +46,25 @@ data MCSEffect r
   = MCSEffect
       { -- | A map of (src, dst) variable names, and how
         --  to compute dst from src.
-        _hcGraph :: EffectGraph,
+        _mcsGraph :: EffectGraph,
         -- | An expression that combines variable
         --  names from `graph`, and yields the final output
         --  of the computation graph.
-        _hcSink :: CPSFuzz r
+        _mcsSink :: CPSFuzz r
       }
 
+data EffectGraphs =
+  Sing EffectGraph
+  | Bind EffectGraphs EffectGraphs
+
+data MCSEffects r
+  = MCSEffects {
+    _mcsGraphs :: EffectGraphs,
+    _mcsSink :: CPSFuzz r
+    }
+
 makeLensesWith abbreviatedFields ''MCSEffect
+makeLensesWith abbreviatedFields ''MCSEffects
 
 data CompilerError
   = InternalError String
@@ -73,6 +84,18 @@ newtype Compiler a = Compiler {runCompiler_ :: StateT NameState (Either SomeExce
 
 runCompiler :: Compiler a -> Either SomeException a
 runCompiler = flip evalStateT emptyNameState . runCompiler_
+
+postprocessEffects ::
+  (MonadThrow m, FreshM m)
+  => (EffectGraph -> m EffectGraph) -> EffectGraphs -> m EffectGraphs
+postprocessEffects act (Sing g)   = Sing <$> act g
+postprocessEffects act (Bind a b) = Bind a <$> postprocessEffects act b
+
+preprocessEffects ::
+  (MonadThrow m, FreshM m)
+  => (EffectGraph -> m EffectGraph) -> EffectGraphs -> m EffectGraphs
+preprocessEffects act (Sing g)   = Sing <$> act g
+preprocessEffects act (Bind a b) = Bind <$> preprocessEffects act a <*> pure b
 
 -- | Takes the disjoint union of two maps.
 mergeEdges ::
@@ -95,6 +118,17 @@ merge :: MonadThrow m => EffectGraph -> EffectGraph -> m EffectGraph
 merge m1 m2 = do
   m <- mergeEdges (m1 ^. edges) (m2 ^. edges)
   return $ EffectGraph m (mergeNeighbors (m1 ^. neighbors) (m2 ^. neighbors))
+
+coalesceEffects :: MonadThrow m => EffectGraphs -> m EffectGraph
+coalesceEffects (Sing g) = return g
+coalesceEffects (Bind a b) = do
+  a' <- coalesceEffects a
+  b' <- coalesceEffects b
+  merge a' b'
+
+coalesce :: MonadThrow m => MCSEffects r -> m (MCSEffect r)
+coalesce (MCSEffects graphs r) =
+  flip MCSEffect r <$> coalesceEffects graphs
 
 insert :: MonadThrow m => EffectGraph -> Direction -> AnyEdge -> m EffectGraph
 insert m dir@(from, to) e =
@@ -126,6 +160,71 @@ checkDbName :: MonadThrow m => CPSFuzz (Bag r) -> m String
 checkDbName (CVar x) = return x
 checkDbName _ =
   throwM $ InternalError "checkDbName: compiled db terms should always be variables"
+
+compileBinop' :: (MonadThrow m, FreshM m) => CPSFuzz a -> CPSFuzz b -> (CPSFuzz a -> CPSFuzz b -> CPSFuzz r) -> m (MCSEffects r)
+compileBinop' a b f = do
+  a' <- compile' a
+  b' <- compile' b
+  MCSEffect aGraph aSink <- coalesce a'
+  MCSEffect bGraph bSink <- coalesce b'
+  graph <- merge aGraph bGraph
+  return $ MCSEffects (Sing graph) (f aSink bSink)
+
+compile' :: (MonadThrow m, FreshM m) => CPSFuzz r -> m (MCSEffects r)
+compile' (CVar x) = return $ MCSEffects (Sing emptyEG) (CVar x)
+compile' (CNumLit n) = return $ MCSEffects (Sing emptyEG) (CNumLit n)
+compile' (CAdd a b) = compileBinop' a b (+)
+compile' (CMinus a b) = compileBinop' a b (-)
+compile' (CMult a b) = compileBinop' a b (*)
+compile' (CDiv a b) = compileBinop' a b (/)
+compile' (CAbs a) = do
+  MCSEffects aGraph aSink <- compile' a
+  return $ MCSEffects aGraph (abs aSink)
+compile' (CGT a b) = compileBinop' a b (%>)
+compile' (CGE a b) = compileBinop' a b (%>=)
+compile' (CLT a b) = compileBinop' a b (%<)
+compile' (CLE a b) = compileBinop' a b (%<=)
+compile' (CEQ a b) = compileBinop' a b (%==)
+compile' (CNEQ a b) = compileBinop' a b (%/=)
+compile' (BMap f db kont) = do
+  db' <- compile' db
+  MCSEffect dbGraph dbSink <- coalesce db'
+  srcName <- checkDbName dbSink
+  tgtName <- gfresh "bmap_result"
+  MCSEffects kontGraphs kontSink <- compile' (kont (CVar tgtName))
+  graphs <- flip preprocessEffects kontGraphs $ \g -> do
+    g' <- merge dbGraph g
+    insert g' (srcName, tgtName) (AnyEdge (Map f))
+  return $ MCSEffects graphs kontSink
+compile' (BSum clip (db :: CPSFuzz (Bag row)) kont) = do
+  db' <- compile' db
+  MCSEffect dbGraph dbSink <- coalesce db'
+  srcName <- checkDbName dbSink
+  tgtName <- gfresh "bsum_result"
+  MCSEffects kontGraphs kontSink <- compile' (kont (CVar tgtName))
+  graphs <- flip preprocessEffects kontGraphs $ \g -> do
+    g' <- merge dbGraph g
+    insert g' (srcName, tgtName) (AnyEdge @(Bag row) @row (Sum clip))
+  return $ MCSEffects graphs kontSink
+compile' (CShare v f) = do
+  v' <- compile' v
+  MCSEffect vGraph vSink <- coalesce v'
+  MCSEffects fGraphs fSink <- compile' (f vSink)
+  graphs <- flip preprocessEffects fGraphs (merge vGraph)
+  return $ MCSEffects graphs fSink
+compile' (CReturn m) = do
+  MCSEffects mGraphs mSink <- compile' m
+  return $ MCSEffects mGraphs (CReturn mSink)
+compile' (CBind (m :: CPSFuzz (Distr a)) f) = do
+  MCSEffects mGraphs mSink <- compile' m
+  mName <- gfresh "cbind_m"
+  MCSEffects fGraphs fSink <- compile' (f (CVar mName))
+  let fSinkFun = \(bound :: CPSFuzz a) -> substCPSFuzz mName fSink bound
+  return $ MCSEffects (Bind mGraphs fGraphs) (CBind mSink fSinkFun)
+compile' (CLap w c) = do
+  c' <- compile' c
+  MCSEffect cGraph cSink <- coalesce c'
+  return $ MCSEffects (Sing cGraph) (CLap w cSink)
 
 -- ##################
 -- # INFRASTRUCTURE #
