@@ -170,8 +170,8 @@ prettyCPSKont freshArgName k = do
   return $ parens $ text "\\" <> text freshArgName <+> text "->" <+> body'
 
 prettyBMCS :: Int -> BMCS a -> P Doc
-prettyBMCS _ (BVar x) = return $ text x
-prettyBMCS _ (BNumLit x) = return $ double x
+--prettyBMCS _ (BVar x) = return $ text x
+--prettyBMCS _ (BNumLit x) = return $ double x
 prettyBMCS p (Run reprSize bound mf rf) = do
   mf' <- prettyExpr (precedenceTable "App" + associativityTable "App" * 2) mf
   rf' <- prettyExpr (precedenceTable "App" + associativityTable "App" * 3) rf

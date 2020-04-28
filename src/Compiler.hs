@@ -243,6 +243,9 @@ compileBinop' a b f = do
   graph <- merge aGraph bGraph
   return $ MCSEffect graph (f aSink bSink)
 
+-- |Traces the BMCS effects of the input program. The resulting `sink` should
+-- compute the same value, but without any `BMap` or `BFilter` in its syntax
+-- tree. It also contains no `CShare` as an implementation detail...
 compile' :: (MonadThrow m, FreshM m) => CPSFuzz r -> m (MCSEffect r)
 compile' (CVar x) = return $ MCSEffect emptyEG (CVar x)
 compile' (CNumLit n) = return $ MCSEffect emptyEG (CNumLit n)
@@ -293,6 +296,38 @@ compile' (CBind (m :: CPSFuzz (Distr a)) f) = do
 compile' (CLap w c) = do
   MCSEffect cGraph cSink <- compile' c
   return $ MCSEffect cGraph (CLap w cSink)
+
+monadSimpl :: forall a m. (Typeable a, FreshM m) => CPSFuzz a -> m (CPSFuzz a)
+monadSimpl term =
+  monadSimplLeft' term >>= monadSimplRight'
+
+monadSimplLeft' :: forall a m. (Typeable a, FreshM m) => CPSFuzz a -> m (CPSFuzz a)
+monadSimplLeft' (CBind (CReturn (m :: CPSFuzz a')) f) = do
+  m' <- monadSimplLeft' m
+  x <- gfresh "x"
+  f' <- monadSimplLeft' (f (CVar x))
+  return $ substCPSFuzz x f' m'
+monadSimplLeft' term = monadSimplLeft' term
+
+isCReturn :: forall a b m. (Typeable a, Typeable b, FreshM m)
+  => (CPSFuzz a -> CPSFuzz (Distr b)) -> m (Maybe (a :~~: b))
+isCReturn f = do
+  x <- gfresh "x"
+  case f (CVar x) of
+    CReturn _ -> return $ eqTypeRep (typeRep @a) (typeRep @b)
+    _ -> return Nothing
+
+monadSimplRight' :: forall a m. (Typeable a, FreshM m) => CPSFuzz a -> m (CPSFuzz a)
+monadSimplRight' (CBind (m :: CPSFuzz (Distr arg)) (f :: CPSFuzz arg -> CPSFuzz (Distr ret))) = do
+  isReturn <- isCReturn @arg @ret f
+  case isReturn of
+    Just HRefl -> monadSimplRight' m
+    _ -> do
+      m' <- monadSimplRight' m
+      x <- gfresh "x"
+      f' <- monadSimplRight' (f (CVar x))
+      return $ CBind m' (substCPSFuzz x f')
+monadSimplRight' term = monadSimplRight' term
 
 data AnyExpr :: * where
   AnyExpr :: Typeable r => Expr r -> AnyExpr

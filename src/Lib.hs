@@ -21,7 +21,7 @@ infix 4 %<, %<=, %>, %>=, %==, %/=
 
 -- | Utility type used to embed a monadic computation in the monad `m` into a
 -- language carrier `f`.
-newtype Mon f m a = Mon {runMon :: forall b. (a -> f (m b)) -> f (m b)}
+newtype Mon f m a = Mon {runMon :: forall b. Typeable b => (a -> f (m b)) -> f (m b)}
   deriving (Functor)
 
 -- TODO: make this a proper distribution type
@@ -153,7 +153,7 @@ data CPSFuzz (a :: *) where
     CPSFuzz (Distr a)
   -- | Deeply embed a monadic bind.
   CBind ::
-    (CFT a) =>
+    (CFT a, CFT b) =>
     CPSFuzz (Distr a) ->
     (CPSFuzz a -> CPSFuzz (Distr b)) ->
     CPSFuzz (Distr b)
@@ -162,24 +162,21 @@ data CPSFuzz (a :: *) where
 type BT a = Typeable a
 
 data BMCS (a :: *) where
-  BVar :: BT a => String -> BMCS a
-  BNumLit :: Number -> BMCS Number
   BReturn :: BT a => BMCS a -> BMCS (Distr a)
   BBind :: BT a => BMCS (Distr a) -> (BMCS a -> BMCS (Distr b)) -> BMCS (Distr b)
-  {- TODO: we need something like this eventually, but this may not be the right way to do it.
-  -- |Run a green-zone computation on non-sensitive data using unrestricted language.
-  Green   :: (BT a, BT b) => Expr (a -> b) -> BMCS (a -> b)
-  -}
 
-  Run ::
+  Green :: BT r => Expr r -> BMCS r
+
+  Run :: (Typeable row, Typeable sum, Clip sum)
+    =>
     -- | vector representation size
     Int ->
     -- | Clip bound
     Number ->
     -- | map function
-    Expr (Vec Number -> Vec Number) ->
+    Expr (row -> sum) ->
     -- | release function
-    Expr (Vec Number -> Distr Number) ->
+    Expr (sum -> Distr Number) ->
     BMCS (Distr Number)
 
 -- ###############
