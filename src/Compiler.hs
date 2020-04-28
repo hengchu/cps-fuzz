@@ -12,6 +12,7 @@ import Lib
 import Names
 import Text.Printf
 import Type.Reflection
+import qualified Data.Set as S
 
 data Edge (from :: *) (to :: *) where
   Map :: Expr (from -> to) -> Edge (Bag from) (Bag to)
@@ -59,44 +60,7 @@ data MCSEffect r
         _mcsSink :: CPSFuzz r
       }
 
-{-
-data EffectGraphs
-  = Sing EffectGraph
-  | Bind EffectGraphs EffectGraphs
-
-{-# COMPLETE ConsGraph, Sing #-}
-{-# COMPLETE SnocGraph, Sing #-}
-
-pattern ConsGraph :: EffectGraph -> EffectGraphs -> EffectGraphs
-pattern ConsGraph x xs <- (viewl -> Just (x, xs))
-
-pattern SnocGraph :: EffectGraphs -> EffectGraph -> EffectGraphs
-pattern SnocGraph xs x <- (viewr -> Just (xs, x))
-
-viewl :: EffectGraphs -> Maybe (EffectGraph, EffectGraphs)
-viewl (Sing _) = Nothing
-viewl (Bind (Sing l) r) = Just (l, r)
-viewl (Bind l r) = do
-  (head, tail) <- viewl l
-  Just (head, Bind tail r)
-
-viewr :: EffectGraphs -> Maybe (EffectGraphs, EffectGraph)
-viewr (Sing _) = Nothing
-viewr (Bind l (Sing r)) = Just (l, r)
-viewr (Bind l r) = do
-  (front, last) <- viewr r
-  Just (Bind l front, last)
-
-data MCSEffects r
-  = MCSEffects
-      { _mcsGraphs :: EffectGraphs,
-        _mcsSink :: CPSFuzz r
-      }
--}
-
 makeLensesWith abbreviatedFields ''MCSEffect
-
--- makeLensesWith abbreviatedFields ''MCSEffects
 
 data CompilerError
   = InternalError String
@@ -117,24 +81,6 @@ newtype Compiler a = Compiler {runCompiler_ :: StateT NameState (Either SomeExce
 
 runCompiler :: Compiler a -> Either SomeException a
 runCompiler = flip evalStateT emptyNameState . runCompiler_
-
-{-
-postprocessEffects ::
-  (MonadThrow m, FreshM m) =>
-  (EffectGraph -> m EffectGraph) ->
-  EffectGraphs ->
-  m EffectGraphs
-postprocessEffects act (Sing g) = Sing <$> act g
-postprocessEffects act (Bind a b) = Bind a <$> postprocessEffects act b
-
-preprocessEffects ::
-  (MonadThrow m, FreshM m) =>
-  (EffectGraph -> m EffectGraph) ->
-  EffectGraphs ->
-  m EffectGraphs
-preprocessEffects act (Sing g) = Sing <$> act g
-preprocessEffects act (Bind a b) = Bind <$> preprocessEffects act a <*> pure b
--}
 
 -- | Takes the disjoint union of two maps.
 mergeEdges ::
@@ -178,19 +124,6 @@ merge m1 m2 = do
   tys <- mergeTypes (m1 ^. types) (m2 ^. types)
   return $ EffectGraph m (mergeNeighbors (m1 ^. neighbors) (m2 ^. neighbors)) p tys
 
-{-
-coalesceEffects :: MonadThrow m => EffectGraphs -> m EffectGraph
-coalesceEffects (Sing g) = return g
-coalesceEffects (Bind a b) = do
-  a' <- coalesceEffects a
-  b' <- coalesceEffects b
-  merge a' b'
-
-coalesce :: MonadThrow m => MCSEffects r -> m (MCSEffect r)
-coalesce (MCSEffects graphs r) =
-  flip MCSEffect r <$> coalesceEffects graphs
--}
-
 insert :: forall toType m. (MonadThrow m, Typeable toType) => EffectGraph -> Direction -> AnyEdge -> m EffectGraph
 insert m dir@(from, to) e =
   case M.lookup dir (m ^. edges) of
@@ -212,19 +145,6 @@ insert m dir@(from, to) e =
                 %~ M.insert to (SomeTypeRep (typeRep @toType))
         Just _ -> throwM . InternalError $ printf "%s already has a parent" to
     Just _ -> throwM . InternalError $ printf "direction %s is duplicated" (show dir)
-
-{-
-isPure :: forall r. CPSFuzz r -> Bool
-isPure (CVar _) =
-  fst (splitApps (typeRep @r)) /= fst (splitApps (typeRep @Distr))
-isPure (BMap _ _ kont) = isPure (kont (CVar secretVarName))
-isPure (BSum _ _ kont) = isPure (kont (CVar secretVarName))
-isPure (CShare v f) = isPure v && isPure (f (CVar secretVarName))
-isPure (CReturn _) = False
-isPure (CBind _ _) = False
-isPure (CLap _ _) = False
-isPure _ = True
--}
 
 checkDbName :: MonadThrow m => CPSFuzz (Bag r) -> m String
 checkDbName (CVar x) = return x
@@ -300,6 +220,34 @@ compile' (CLap w c) = do
 monadSimpl :: forall a m. (Typeable a, FreshM m) => CPSFuzz a -> m (CPSFuzz a)
 monadSimpl term =
   monadSimplLeft' term >>= monadSimplRight'
+
+pureTranslateBool :: CPSFuzz Bool -> Expr Bool
+pureTranslateBool = undefined
+
+pureTranslate :: CPSFuzz Number -> Expr Number
+pureTranslate = undefined
+
+-- | Assuming the initial input db has type (Bag row), generate BMCS code for
+-- computing the normalized `CPSFuzz` program.
+--
+-- Arguments:
+-- `db`: name of the input database
+-- `inScope`: the `CPSFuzz` variables that contain released information and are in scope at this point
+-- `g`: the traced `EffectGraph` for the whole program
+codegen' :: forall (row :: *) a m.
+  (Typeable row, Typeable a, FreshM m)
+  => String -> S.Set String -> EffectGraph -> CPSFuzz (Distr a) -> m (BMCS (Distr a))
+codegen' db inScope g (CLap c w) = do
+  let fvs = fvCPSFuzz w inScope
+  let
+    sourceTerms :: M.Map String AnyExpr
+    sourceTerms = M.fromList [(db, AnyExpr (EVar @row db))]
+  -- 1. pull effects for each of fvs
+  -- 2. fuse them all together
+  -- 3. build release function using wExpr by
+  --    substituting the projections for each of fvs into wExpr
+  let wExpr = pureTranslate w
+  undefined
 
 monadSimplLeft' :: forall a m. (Typeable a, FreshM m) => CPSFuzz a -> m (CPSFuzz a)
 monadSimplLeft' (CBind (CReturn (m :: CPSFuzz a')) f) = do
