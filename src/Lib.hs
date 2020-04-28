@@ -5,6 +5,9 @@ module Lib where
 import Data.Functor.Identity
 import IfCxt
 import Type.Reflection
+import qualified Data.Set as S
+import Names
+import Control.Monad.State.Strict
 
 newtype Bag a = Bag [a]
   deriving (Show, Eq, Ord)
@@ -251,6 +254,81 @@ bag_map_filter_sum db =
 -- # INFRASTRUCTURE #
 -- ##################
 
+fvCPSFuzz :: forall r. CPSFuzz r -> S.Set String -> S.Set String
+fvCPSFuzz term inScope =
+  flip evalState (nameState inScope) (fvCPSFuzz' term inScope)
+
+fvCPSFuzz' :: forall r m. FreshM m => CPSFuzz r -> S.Set String -> m (S.Set String)
+fvCPSFuzz' (CVar x) inScope =
+  case x `S.member` inScope of
+    True -> return S.empty
+    False -> return $ S.singleton x
+fvCPSFuzz' (CNumLit _) _ = return S.empty
+fvCPSFuzz' (CAdd a b) inScope = do
+  a' <- fvCPSFuzz' a inScope
+  b' <- fvCPSFuzz' b inScope
+  return $ S.union a' b'
+fvCPSFuzz' (CMinus a b) inScope = do
+  a' <- fvCPSFuzz' a inScope
+  b' <- fvCPSFuzz' b inScope
+  return $ S.union a' b'
+fvCPSFuzz' (CMult a b) inScope = do
+  a' <- fvCPSFuzz' a inScope
+  b' <- fvCPSFuzz' b inScope
+  return $ S.union a' b'
+fvCPSFuzz' (CDiv a b) inScope = do
+  a' <- fvCPSFuzz' a inScope
+  b' <- fvCPSFuzz' b inScope
+  return $ S.union a' b'
+fvCPSFuzz' (CAbs a) inScope = fvCPSFuzz' a inScope
+fvCPSFuzz' (CGT a b) inScope = do
+  a' <- fvCPSFuzz' a inScope
+  b' <- fvCPSFuzz' b inScope
+  return $ S.union a' b'
+fvCPSFuzz' (CGE a b) inScope = do
+  a' <- fvCPSFuzz' a inScope
+  b' <- fvCPSFuzz' b inScope
+  return $ S.union a' b'
+fvCPSFuzz' (CLT a b) inScope = do
+  a' <- fvCPSFuzz' a inScope
+  b' <- fvCPSFuzz' b inScope
+  return $ S.union a' b'
+fvCPSFuzz' (CLE a b) inScope = do
+  a' <- fvCPSFuzz' a inScope
+  b' <- fvCPSFuzz' b inScope
+  return $ S.union a' b'
+fvCPSFuzz' (CEQ a b) inScope = do
+  a' <- fvCPSFuzz' a inScope
+  b' <- fvCPSFuzz' b inScope
+  return $ S.union a' b'
+fvCPSFuzz' (CNEQ a b) inScope = do
+  a' <- fvCPSFuzz' a inScope
+  b' <- fvCPSFuzz' b inScope
+  return $ S.union a' b'
+fvCPSFuzz' (BMap _ db kont) inScope = do
+  db' <- fvCPSFuzz' db inScope
+  secretVarName <- gfresh "x"
+  kont' <- fvCPSFuzz' (kont (CVar secretVarName)) (S.insert secretVarName inScope)
+  return $ db' `S.union` kont'
+fvCPSFuzz' (BSum _ db kont) inScope = do
+  db' <- fvCPSFuzz' db inScope
+  secretVarName <- gfresh "x"
+  kont' <- fvCPSFuzz' (kont (CVar secretVarName)) (S.insert secretVarName inScope)
+  return $ db' `S.union` kont'
+fvCPSFuzz' (CShare a f) inScope = do
+  a' <- fvCPSFuzz' a inScope
+  secretVarName <- gfresh "x"
+  f' <- fvCPSFuzz' (f (CVar secretVarName)) (S.insert secretVarName inScope)
+  return $ a' `S.union` f'
+fvCPSFuzz' (CReturn a) inScope =
+  fvCPSFuzz' a inScope
+fvCPSFuzz' (CBind a f) inScope = do
+  a' <- fvCPSFuzz' a inScope
+  secretVarName <- gfresh "x"
+  f' <- fvCPSFuzz' (f (CVar secretVarName)) (S.insert secretVarName inScope)
+  return $ a' `S.union` f'
+fvCPSFuzz' (CLap _ c) inScope = fvCPSFuzz' c inScope
+
 substCPSFuzz :: forall a r. Typeable r => String -> CPSFuzz a -> CPSFuzz r -> CPSFuzz a
 substCPSFuzz x term needle =
   case term of
@@ -361,9 +439,6 @@ instance Num (CPSFuzz Number) where
 instance Fractional (CPSFuzz Number) where
   fromRational = CNumLit . fromRational
   (/) = CDiv
-
-secretVarName :: String
-secretVarName = "do not create a variable with this name... otherwise everything falls apart :)"
 
 vecConcat :: Vec a -> Vec a -> Vec a
 vecConcat (Vec as) (Vec bs) = Vec (as ++ bs)

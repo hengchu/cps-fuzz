@@ -34,7 +34,7 @@ library
                -Wno-redundant-constraints
                -Wno-unused-top-binds
                -Wno-partial-type-signatures
-               -Werror
+               -- -Werror
   exposed-modules:
                   Lib
                 , Compiler

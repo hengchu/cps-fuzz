@@ -3,7 +3,8 @@ module Names where
 import Control.Lens
 import qualified Data.Map.Strict as M
 import Data.Semigroup
-import Lib
+import Control.Monad.State.Strict
+import Data.Foldable
 
 type NameMap = M.Map String Int
 
@@ -76,5 +77,13 @@ class Monad m => FreshM m where
           modifyNameState (\st -> st & locals %~ (const $ c' : cs))
           return (hint ++ show nextIdx)
 
+instance FreshM (State NameState) where
+  getNameState = get
+  modifyNameState = modify
+
 emptyNameState :: NameState
-emptyNameState = NameState (M.fromList [(secretVarName, 1)]) []
+emptyNameState = NameState M.empty []
+
+nameState :: Foldable t => t String -> NameState
+nameState inScope = NameState globals []
+  where globals = foldr (\name -> M.insert name 1) M.empty inScope
