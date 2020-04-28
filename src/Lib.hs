@@ -2,12 +2,12 @@
 
 module Lib where
 
-import Data.Functor.Identity
-import IfCxt
-import Type.Reflection
-import qualified Data.Set as S
-import Names
 import Control.Monad.State.Strict
+import Data.Functor.Identity
+import qualified Data.Set as S
+import IfCxt
+import Names
+import Type.Reflection
 
 newtype Bag a = Bag [a]
   deriving (Show, Eq, Ord)
@@ -164,11 +164,9 @@ type BT a = Typeable a
 data BMCS (a :: *) where
   BReturn :: BT a => BMCS a -> BMCS (Distr a)
   BBind :: BT a => BMCS (Distr a) -> (BMCS a -> BMCS (Distr b)) -> BMCS (Distr b)
-
   Green :: BT r => Expr r -> BMCS r
-
-  Run :: (Typeable row, Typeable sum, Clip sum)
-    =>
+  Run ::
+    (Typeable row, Typeable sum, Clip sum) =>
     -- | vector representation size
     Int ->
     -- | Clip bound

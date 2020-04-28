@@ -1,10 +1,10 @@
 module Names where
 
 import Control.Lens
-import qualified Data.Map.Strict as M
-import Data.Semigroup
 import Control.Monad.State.Strict
 import Data.Foldable
+import qualified Data.Map.Strict as M
+import Data.Semigroup
 
 type NameMap = M.Map String Int
 
@@ -86,4 +86,5 @@ emptyNameState = NameState M.empty []
 
 nameState :: Foldable t => t String -> NameState
 nameState inScope = NameState globals []
-  where globals = foldr (\name -> M.insert name 1) M.empty inScope
+  where
+    globals = foldr (\name -> M.insert name 1) M.empty inScope
