@@ -294,6 +294,87 @@ compile' (CLap w c) = do
   MCSEffect cGraph cSink <- compile' c
   return $ MCSEffect cGraph (CLap w cSink)
 
+data AnyExpr :: * where
+  AnyExpr :: Typeable r => Expr r -> AnyExpr
+
+data SIMD f t = SIMD {
+  _sMapFunction :: Expr (f -> t)
+  , _sFromName  :: String
+  , _sToName    :: String
+  }
+
+makeLensesWith abbreviatedFields ''SIMD
+
+data SIMDFusion f t where
+  SIMD1    :: (Typeable f, Typeable t) => SIMD f t -> SIMDFusion f t
+  SIMDCons :: (Typeable fs, Typeable ts, Typeable f, Typeable t)
+    => SIMDFusion fs ts -> SIMD f t -> SIMDFusion (fs,f) (ts,t)
+
+simd :: Expr (f -> t) -> String -> String -> SIMD f t
+simd = SIMD
+
+fuse :: (Typeable fs, Typeable ts, Typeable f, Typeable t)
+  => SIMDFusion fs ts -> Expr (f -> t) -> String -> String -> SIMDFusion (fs, f) (ts, t)
+fuse fusion f from to = SIMDCons fusion (simd f from to)
+
+fusedMapFunction :: SIMDFusion f t -> Expr (f -> t)
+fusedMapFunction (SIMD1 simd) = simd ^. mapFunction
+fusedMapFunction (SIMDCons fusion simd) =
+  let f = fusedMapFunction fusion
+  -- witness the magic of toDeepRepr!
+  in toDeepRepr $ \(a, b) -> (f %@ a, (simd ^. mapFunction) %@ b)
+
+inject :: forall f t m. (Typeable f, MonadThrow m)
+  => M.Map String AnyExpr -> SIMDFusion f t -> m (Expr f)
+inject inputs (SIMD1 simd) = do
+  case M.lookup (simd ^. fromName) inputs of
+    Just (AnyExpr (e :: Expr f')) ->
+      case eqTypeRep (typeRep @f) (typeRep @f') of
+        Just HRefl -> return e
+        _ -> throwM . InternalError $
+          printf "inject: expected input %s to have type %s, but it has type %s"
+          (simd ^. fromName) (show $ typeRep @f) (show $ typeRep @f')
+    Nothing -> throwM . InternalError $ printf "inject: unknown input name %s" (simd ^. fromName)
+inject inputs (SIMDCons (fusion :: SIMDFusion fs1 _) (simd :: SIMD f1 _)) = do
+  acc <- inject inputs fusion
+  case M.lookup (simd ^. fromName) inputs of
+    Just (AnyExpr (e :: Expr f')) ->
+      case eqTypeRep (typeRep @f1) (typeRep @f') of
+        Just HRefl -> return $ EPair acc e
+        _ -> throwM . InternalError $
+          printf "inject: expected input %s to have type %s, but it has type %s"
+          (simd ^. fromName) (show $ typeRep @f) (show $ typeRep @f')
+    Nothing -> throwM . InternalError $ printf "inject: unknown input name %s" (simd ^. fromName)
+
+containsTo :: String -> SIMDFusion f t -> Bool
+containsTo x (SIMD1 simd) = (simd ^. toName) == x
+containsTo x (SIMDCons fusion simd) =
+  containsTo x fusion || (simd ^. toName) == x
+
+project :: forall f t r m. (Typeable t, Typeable r, MonadThrow m)
+  => String -> SIMDFusion f t -> m (Expr (t -> r))
+project x (SIMD1 simd) = do
+  if simd ^. toName == x
+    then case eqTypeRep (typeRep @r) (typeRep @t) of
+           Just HRefl -> return . ELam $ \x -> x
+           _ -> throwM . InternalError $
+             printf "project: expected output name %s to have type %s, but it has type %s"
+             x (show $ typeRep @t) (show $ typeRep @r)
+    else throwM . InternalError $ printf "project: unknown output name %s" x
+project x (SIMDCons (fusion :: SIMDFusion _ ts1) (simd :: SIMD _ t1)) =
+  case (containsTo x fusion, x == simd ^. toName) of
+    (True, False) -> do
+      projFun <- project x fusion
+      return $ (projFun `ecomp` ELam EFst)
+    (False, True) ->
+      case eqTypeRep (typeRep @t1) (typeRep @r) of
+        Just HRefl -> return (ELam ESnd)
+        Nothing -> throwM . InternalError $
+          printf "project: expected output %s to have type %s, but it has type %s"
+          x (show $ typeRep @r) (show $ typeRep @t1)
+    _ -> throwM . InternalError $
+      printf "project: expected output %s to appear on exactly one side" x
+
 pullMapEffectsTrans' ::
   forall (row1 :: *) (row2 :: *) m.
   (MonadThrow m, FreshM m, Typeable row1, Typeable row2)
