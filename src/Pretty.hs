@@ -52,10 +52,8 @@ runP = flip evalState emptyNameState . runP_
 prettyExpr :: forall a. Int -> Expr a -> P Doc
 prettyExpr _ (EVar x) = return $ text x
 prettyExpr _ (ELam (f :: Expr arg -> Expr ret)) = do
-  lpush
-  x <- lfresh "x"
+  x <- gfresh "x"
   body <- prettyExpr 0 (f (EVar x))
-  lpop
   return
     $ parens
     $ text "\\"
@@ -96,11 +94,11 @@ prettyExpr p (ELE a b) = prettyBinop p "<=" prettyExpr a b
 prettyExpr p (EEQ a b) = prettyBinop p "==" prettyExpr a b
 prettyExpr p (ENEQ a b) = prettyBinop p "/=" prettyExpr a b
 prettyExpr p (EJust a) = do
-  a' <- prettyExpr (precedenceTable "App" + associativityTable "App") a
+  a' <- prettyExpr (precedenceTable "App") a
   return $ parensIf (p > precedenceTable "App") (text "Just" <+> a')
 prettyExpr _ ENothing = return $ text "Nothing"
 prettyExpr p (EIsJust a) = do
-  a' <- prettyExpr (precedenceTable "App" + associativityTable "App") a
+  a' <- prettyExpr (precedenceTable "App") a
   return $ parensIf (p > precedenceTable "App") (text "isJust" <+> a')
 prettyExpr p (EFromJust a) = do
   a' <- prettyExpr (precedenceTable "App" + associativityTable "App") a
@@ -110,11 +108,11 @@ prettyExpr _ (EPair a b) = do
   b' <- prettyExpr 0 b
   return $ parens (a' <> comma <+> b')
 prettyExpr p (EFst a) = do
-  a' <- prettyExpr (precedenceTable "App" + associativityTable "App") a
-  return $ parensIf (p > precedenceTable "App") (text "fst" <+> a')
+  a' <- prettyExpr (precedenceTable "App") a
+  return $ parens {-parensIf (p > precedenceTable "App")-} (text "fst" <+> a')
 prettyExpr p (ESnd a) = do
-  a' <- prettyExpr (precedenceTable "App" + associativityTable "App") a
-  return $ parensIf (p > precedenceTable "App") (text "snd" <+> a')
+  a' <- prettyExpr (precedenceTable "App") a
+  return $ parens {-parensIf (p > precedenceTable "App")-} (text "snd" <+> a')
 prettyExpr _ (EShare a f) = do
   x <- gfresh "x"
   f' <- prettyExpr 0 (f (EVar x))
@@ -175,19 +173,15 @@ prettyCPSFuzz p (CNEQ a b) =
 prettyCPSFuzz p (BMap f db k) = do
   f' <- prettyExpr (precedenceTable "App") f
   db' <- prettyCPSFuzz (precedenceTable "App" + associativityTable "App") db
-  lpush
-  dbName <- lfresh "db"
+  dbName <- gfresh "db"
   k' <- prettyCPSKont dbName k
-  lpop
   return
     $ parensIf (p > precedenceTable "App")
     $ text "bmap" <+> f' <+> db' <+> k'
 prettyCPSFuzz p (BSum clip db k) = do
   db' <- prettyCPSFuzz (precedenceTable "App" + associativityTable "App") db
-  lpush
-  dbName <- lfresh "sum"
+  dbName <- gfresh "sum"
   k' <- prettyCPSKont dbName k
-  lpop
   return
     $ parensIf (p > precedenceTable "App")
     $ text "bsum" <+> text (show clip) <+> db' <+> k'

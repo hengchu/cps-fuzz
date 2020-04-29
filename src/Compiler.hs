@@ -15,6 +15,8 @@ import Lib
 import Names
 import Text.Printf
 import Type.Reflection
+import Debug.Trace
+import Pretty
 
 data Edge (from :: *) (to :: *) where
   Map :: Expr (from -> to) -> Edge (Bag from) (Bag to)
@@ -308,6 +310,8 @@ codegen' _db inScope _ (CReturn m) = do
     _ -> throwM_ . ReleasesPrivateData $ fvs
 codegen' db inScope g (CLap c w) = do
   let fvs = S.toList (fvCPSFuzz w inScope)
+  fvTypes <- traverse (getType $ g ^. types) fvs
+  let fvWithTypes = nub (zip fvs fvTypes)
   let sourceTerms :: M.Map String AnyExpr
       sourceTerms = M.fromList [(db, AnyExpr (EVar @row db))]
   -- 1. pull effects for each of fvs
@@ -316,6 +320,7 @@ codegen' db inScope g (CLap c w) = do
   --    substituting the projections for each of fvs into wExpr
   let wExpr = pureTranslate w
   fvParents <- traverse (getParent $ g ^. parents) fvs
+  let fvWithTypesWithParent = nub $ zip (zip fvs fvTypes) fvParents
   parentTypes <- traverse (getType $ g ^. types) fvParents
   let parentWithTypes = nub (zip fvParents parentTypes)
   case fvs of
@@ -326,10 +331,17 @@ codegen' db inScope g (CLap c w) = do
         (fusedInput :: Expr fs) <- inject sourceTerms fusion
         let inj :: (Expr (row -> fs)) = toDeepRepr $
               \(input :: Expr row) -> substExpr db fusedInput input
-        summed <- gfresh "summed"
-        releaseExpr <- substWithProjection fusion (EVar summed) wExpr parentWithTypes
+        delayedSubsts <- substWithProjection fusion fvWithTypesWithParent
         let releaseFun =
-              \(releaseTerm :: Expr ts) -> ELap c (substExpr summed releaseExpr releaseTerm)
+              \(releaseTerm :: Expr ts) ->
+                let runDelayedSubsts t [] = t
+                    runDelayedSubsts t ((x, proj):more) =
+                      --trace x $
+                      case proj releaseTerm of
+                        AnyExpr needle ->
+                          --traceShow (runP $ prettyExpr 0 needle) $
+                          runDelayedSubsts (substExpr x t needle) more
+                in ELap c (runDelayedSubsts wExpr delayedSubsts)
         case resolveClip @ts of
           Nothing -> throwM_ $ RequiresClip (SomeTypeRep (typeRep @ts))
           Just dict ->
@@ -350,24 +362,21 @@ codegen' db inScope g (CLap c w) = do
           throwM_ . InternalError $
             printf "codegen': %s has no known type" x
     substWithProjection ::
-      forall fs ts a.
+      forall fs ts.
       (Typeable fs, Typeable ts) =>
       SIMDFusion fs ts ->
-      Expr ts ->
-      Expr a ->
-      [(String, SomeTypeRep)] ->
-      m (Expr a)
-    substWithProjection _ _ term [] = return term
-    substWithProjection fusion summed term ((x, xTR) : xs) =
+      [((String, SomeTypeRep), String)] ->
+      m [(String, Expr ts -> AnyExpr)]
+    substWithProjection _      []                       = return []
+    substWithProjection fusion (((x, xTR), xParent) : xs) =
       case xTR of
-        SomeTypeRep (xDbType :: TypeRep xDbType) -> do
-          withTypeable xDbType
-            $ withKindStar @_ @xDbType
-            $ withTypeBag @xDbType
-            $ \(_ :: Proxy xRowType) -> do
-              projX <- project @_ @ts @xRowType x fusion
-              term' <- substWithProjection fusion summed term xs
-              return $ substExpr x term' (projX %@ summed)
+        SomeTypeRep (xDbType :: TypeRep xRowType) -> do
+          withTypeable xDbType $
+            withKindStar @_ @xRowType $ do
+              projX <- project @_ @ts @xRowType xParent fusion
+              more <- substWithProjection fusion xs
+              return $ (x, \(summed :: Expr ts) -> AnyExpr (projX %@ summed)):more
+
 codegen' _ _ _ _ = throwM_ . InternalError $ "codegen': unexpected CPSFuzz term"
 
 codegenFusedMap' ::
@@ -414,7 +423,10 @@ isCReturn ::
 isCReturn f = do
   x <- gfresh "x"
   case f (CVar x) of
-    CReturn _ -> return $ eqTypeRep (typeRep @a) (typeRep @b)
+    CReturn (CVar y) ->
+      if x == y
+      then return $ eqTypeRep (typeRep @a) (typeRep @b)
+      else return Nothing
     _ -> return Nothing
 
 monadSimplRight' :: forall a m. (Typeable a, FreshM m) => CPSFuzz a -> m (CPSFuzz a)
@@ -535,9 +547,12 @@ project x (SIMDCons (fusion :: SIMDFusion _ ts1) (simd :: SIMD _ t1)) =
               x
               (show $ typeRep @r)
               (show $ typeRep @t1)
-    _ ->
+    (True, True) ->
       throwM_ . InternalError $
         printf "project: expected output %s to appear on exactly one side" x
+    (False, False) ->
+      throwM_ . InternalError $
+        printf "project: expected output %s to appear on at least one side" x
 
 pullMapEffectsTrans' ::
   forall (row1 :: *) (row2 :: *) m.
