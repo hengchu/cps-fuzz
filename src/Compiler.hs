@@ -340,7 +340,7 @@ codegen' db inScope g (CLap c w) = do
   parentTypes <- traverse (getType $ g ^. types) fvParents
   let parentWithTypes = nub (zip fvParents parentTypes)
   case fvs of
-    [] -> return (BLap c (pureTranslate w))
+    [] -> return (Green $ BLap c (pureTranslate w))
     _ -> codegenFusedMap' @row db parentWithTypes g $
       \(fusion :: SIMDFusion fs ts) -> do
         let mf :: (Expr (fs -> ts)) = fusedMapFunction fusion
