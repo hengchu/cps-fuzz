@@ -257,6 +257,22 @@ bag_filter_sum_noise db = toDeepRepr
     s2' <- lap 2.0 s
     return (s1' + s2')
 
+bag_filter_sum_noise2 :: CPSFuzz (Bag Number) -> CPSFuzz (Distr Number)
+bag_filter_sum_noise2 db = toDeepRepr
+  $ share (bag_filter_sum db)
+  $ \s -> do
+    s1' <- lap 1.0 s
+    s2' <- lap 2.0 s1'
+    return (s1' + s2')
+
+bag_filter_sum_noise3 :: CPSFuzz (Bag Number) -> CPSFuzz (Distr Number)
+bag_filter_sum_noise3 db = toDeepRepr
+  $ share (bag_filter_sum db)
+  $ \s -> do
+    s1' <- lap 1.0 s
+    s2' <- lap 2.0 (2 * s)
+    return (s1' * s2')
+
 bag_map_filter_sum :: CPSFuzz (Bag Number) -> CPSFuzz Number
 bag_map_filter_sum db =
   bmap (* 2) db bag_filter_sum
