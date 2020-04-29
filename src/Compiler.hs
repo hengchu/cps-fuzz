@@ -13,6 +13,7 @@ import Lib
 import Names
 import Text.Printf
 import Type.Reflection
+import Data.List (nub)
 
 data Edge (from :: *) (to :: *) where
   Map :: Expr (from -> to) -> Edge (Bag from) (Bag to)
@@ -61,6 +62,15 @@ data MCSEffect r
       }
 
 makeLensesWith abbreviatedFields ''MCSEffect
+
+data SIMD f t
+  = SIMD
+      { _sMapFunction :: Expr (f -> t),
+        _sFromName :: String,
+        _sToName :: String
+      }
+
+makeLensesWith abbreviatedFields ''SIMD
 
 data CompilerError
   = InternalError String
@@ -236,14 +246,14 @@ pureTranslate = undefined
 -- `g`: the traced `EffectGraph` for the whole program
 codegen' ::
   forall (row :: *) a m.
-  (Typeable row, Typeable a, FreshM m) =>
+  (Typeable row, Typeable a, FreshM m, MonadThrow m) =>
   String ->
   S.Set String ->
   EffectGraph ->
   CPSFuzz (Distr a) ->
   m (BMCS (Distr a))
 codegen' db inScope g (CLap c w) = do
-  let fvs = fvCPSFuzz w inScope
+  let fvs = S.toList (fvCPSFuzz w inScope)
   let sourceTerms :: M.Map String AnyExpr
       sourceTerms = M.fromList [(db, AnyExpr (EVar @row db))]
   -- 1. pull effects for each of fvs
@@ -251,7 +261,84 @@ codegen' db inScope g (CLap c w) = do
   -- 3. build release function using wExpr by
   --    substituting the projections for each of fvs into wExpr
   let wExpr = pureTranslate w
-  undefined
+  fvParents   <- traverse (getParent $ g ^. parents) fvs
+  parentTypes <- traverse (getType $ g ^. types) fvParents
+  let parentWithTypes = nub (zip fvParents parentTypes)
+  case fvs of
+    [] -> return (Green (ELap c wExpr))
+    _  -> codegenFusedMap' @row db parentWithTypes g $
+      \(fusion :: SIMDFusion fs ts) -> do
+      let mf :: (Expr (fs -> ts)) = fusedMapFunction fusion
+      (fusedInput :: Expr fs) <- inject sourceTerms fusion
+      let inj :: (Expr (row -> fs)) = toDeepRepr $
+            \(input :: Expr row) -> substExpr db fusedInput input
+      summed <- gfresh "summed"
+      releaseExpr <- substWithProjection fusion (EVar summed) wExpr parentWithTypes
+      let releaseFun =
+            \(releaseTerm :: Expr ts) -> ELap c (substExpr summed releaseExpr releaseTerm)
+      ifCxt (Proxy :: Proxy (Clip ts))
+        -- TODO: fill in the clip bound here
+        (return $ Run (vecSize @ts) undefined (mf `ecomp` inj) (toDeepRepr releaseFun))
+        (throwM $ RequiresClip (SomeTypeRep (typeRep @ts)))
+  where getParent parents x =
+          case M.lookup x parents of
+            Just p -> return p
+            Nothing -> throwM . InternalError $
+              printf "codegen': %s has no parent" x
+        getType types x =
+          case M.lookup x types of
+            Just ty -> return ty
+            Nothing -> throwM . InternalError $
+              printf "codegen': %s has no known type" x
+
+        substWithProjection :: forall fs ts a.
+          (Typeable fs, Typeable ts)
+          => SIMDFusion fs ts
+          -> Expr ts
+          -> Expr a
+          -> [(String, SomeTypeRep)]
+          -> m (Expr a)
+        substWithProjection _      _      term []            = return term
+        substWithProjection fusion summed term ((x, xTR):xs) =
+          case xTR of
+            SomeTypeRep (xRowType :: TypeRep xRowType) -> do
+              case eqTypeRep (typeRepKind xRowType) (typeRepKind (typeRep @Int)) of
+                Just HRefl ->
+                  withTypeable xRowType $ do
+                  projX <- project @_ @ts @xRowType x fusion
+                  term' <- substWithProjection fusion summed term xs
+                  return $ substExpr x term' (projX %@ summed)
+                Nothing -> throwM . InternalError $
+                  printf "codegen': expected %s row type to have kind *"
+                  x (show xRowType)
+
+codegenFusedMap' :: forall (row :: *) r m.
+  (Typeable row, FreshM m, MonadThrow m) =>
+  String ->
+  [(String, SomeTypeRep)] ->
+  EffectGraph ->
+  (forall fs ts. (Typeable fs, Typeable ts, IfCxt (Clip ts)) => SIMDFusion fs ts -> m r)
+  -> m r
+codegenFusedMap' db []         g kont =
+  throwM . InternalError $ "codegenFusedMap': expecting at least 1 free variable"
+codegenFusedMap' db [(x, xTR)] g kont =
+  case xTR of
+    SomeTypeRep (xRowType :: TypeRep xRowType) ->
+      case eqTypeRep (typeRepKind xRowType) (typeRepKind (typeRep @Int)) of
+        Just HRefl ->
+          withTypeable xRowType $ do
+            f <- pullMapEffectsTrans' @row @xRowType g db x
+            kont (SIMD1 $ simd f db x)
+        _ -> throwM . InternalError $
+          printf "codegenFusedMap': expected %s row type %s to have kind *"
+          x (show xRowType)
+codegenFusedMap' db ((x, xTR):xs) g kont = do
+  codegenFusedMap' @row db [(x,xTR)] g $
+    \case
+      SIMD1 (SIMD f from to) ->
+        codegenFusedMap' @row db xs g $
+        \fusionXs -> kont (fuse fusionXs f from to)
+      _ -> throwM . InternalError $ "codegenFusedMap': expected SIMD1 here"
 
 monadSimplLeft' :: forall a m. (Typeable a, FreshM m) => CPSFuzz a -> m (CPSFuzz a)
 monadSimplLeft' (CBind (CReturn (m :: CPSFuzz a')) f) = do
@@ -287,19 +374,10 @@ monadSimplRight' term = monadSimplRight' term
 data AnyExpr :: * where
   AnyExpr :: Typeable r => Expr r -> AnyExpr
 
-data SIMD f t
-  = SIMD
-      { _sMapFunction :: Expr (f -> t),
-        _sFromName :: String,
-        _sToName :: String
-      }
-
-makeLensesWith abbreviatedFields ''SIMD
-
 data SIMDFusion f t where
-  SIMD1 :: (Typeable f, Typeable t) => SIMD f t -> SIMDFusion f t
+  SIMD1 :: (Typeable f, Typeable t, IfCxt (Clip t)) => SIMD f t -> SIMDFusion f t
   SIMDCons ::
-    (Typeable fs, Typeable ts, Typeable f, Typeable t) =>
+    (Typeable fs, Typeable ts, Typeable f, Typeable t, IfCxt (Clip (ts, t))) =>
     SIMDFusion fs ts ->
     SIMD f t ->
     SIMDFusion (fs, f) (ts, t)
@@ -308,7 +386,11 @@ simd :: Expr (f -> t) -> String -> String -> SIMD f t
 simd = SIMD
 
 fuse ::
-  (Typeable fs, Typeable ts, Typeable f, Typeable t) =>
+  (Typeable fs,
+   Typeable ts,
+   Typeable f,
+   Typeable t,
+   IfCxt (Clip (ts, t))) =>
   SIMDFusion fs ts ->
   Expr (f -> t) ->
   String ->
