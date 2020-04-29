@@ -162,7 +162,7 @@ prettyCPSFuzz p (BSum clip db k) = do
   lpop
   return
     $ parensIf (p > precedenceTable "App")
-    $ text "bsum" <+> double clip <+> db' <+> k'
+    $ text "bsum" <+> text (show clip) <+> db' <+> k'
 
 prettyCPSKont :: Typeable a => String -> CPSKont a b -> P Doc
 prettyCPSKont freshArgName k = do

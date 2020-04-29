@@ -40,7 +40,7 @@ library
                 , Compiler
                 , Pretty
                 , Names
-                , IfCxt
+                -- , IfCxt
   default-extensions:
                    DataKinds
                  , DeriveGeneric
@@ -95,6 +95,7 @@ library
               , data-fix >= 0.2 && < 0.3
               , template-haskell >= 2.15.0.0 && < 2.16
               , exceptions >= 0.10.4 && < 0.11
+              , constraints >= 0.11 && < 0.13
   default-language: Haskell2010
 
 executable cps-fuzz-exe

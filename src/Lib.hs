@@ -5,15 +5,15 @@ module Lib where
 import Control.Monad.State.Strict
 import Data.Functor.Identity
 import qualified Data.Set as S
-import IfCxt
 import Names
 import Type.Reflection
+import Data.Constraint
 
 newtype Bag a = Bag [a]
-  deriving (Show, Eq, Ord)
+  deriving (Show, Eq, Ord, Foldable, Functor, Traversable)
 
 newtype Vec a = Vec [a]
-  deriving (Show, Eq, Ord)
+  deriving (Show, Eq, Ord, Foldable, Functor, Traversable)
 
 type ET a = Typeable a
 
@@ -65,7 +65,7 @@ class VecMonoid a => Clip a where
   -- 1. asVec (clip r a) = map (clip r) (asVec a) -- can distribute `clip r`
   -- 2. clip r empty = empty
   -- 3. more?
-  clip :: Number -> a -> a
+  clip :: Vec Number -> a -> a
 
 class Typeable (DeepRepr a) => Syntactic f a where
   type DeepRepr a :: *
@@ -143,7 +143,7 @@ data CPSFuzz (a :: *) where
   CNEQ :: CPSFuzz Number -> CPSFuzz Number -> CPSFuzz Bool
   -- We only CPS bag operations.
   BMap :: (CFT a, CFT b, CFT r) => Expr (a -> b) -> CPSFuzz (Bag a) -> CPSKont (Bag b) r -> CPSFuzz r
-  BSum :: CFT r => Number -> CPSFuzz (Bag Number) -> CPSKont Number r -> CPSFuzz r
+  BSum :: CFT r => Vec Number -> CPSFuzz (Bag Number) -> CPSKont Number r -> CPSFuzz r
   -- | Avoid code explosion with explicit sharing.
   CShare :: (CFT a, CFT b) => CPSFuzz a -> (CPSFuzz a -> CPSFuzz b) -> CPSFuzz b
   -- | Deeply embed a monadic return.
@@ -162,6 +162,7 @@ data CPSFuzz (a :: *) where
 type BT a = Typeable a
 
 data BMCS (a :: *) where
+  BVar :: BT a => String -> BMCS a
   BReturn :: BT a => BMCS a -> BMCS (Distr a)
   BBind :: BT a => BMCS (Distr a) -> (BMCS a -> BMCS (Distr b)) -> BMCS (Distr b)
   Green :: BT r => Expr r -> BMCS r
@@ -169,8 +170,8 @@ data BMCS (a :: *) where
     (Typeable row, Typeable sum, Clip sum) =>
     -- | vector representation size
     Int ->
-    -- | Clip bound
-    Number ->
+    -- | Clip bound with size equal to the representation size
+    Vec Number ->
     -- | map function
     Expr (row -> sum) ->
     -- | release function
@@ -204,7 +205,7 @@ bmapNothing ::
   CPSFuzz r
 bmapNothing r bag k = bmap (\row -> eIf (eIsJust row) (eFromJust row) r) bag k
 
-bsum :: CFT r => Number -> CPSFuzz (Bag Number) -> (CPSFuzz Number -> CPSFuzz r) -> CPSFuzz r
+bsum :: CFT r => Vec Number -> CPSFuzz (Bag Number) -> (CPSFuzz Number -> CPSFuzz r) -> CPSFuzz r
 bsum bound bag k = BSum bound bag k
 
 lap :: Number -> CPSFuzz Number -> CPSFuzzDistr Number
@@ -233,8 +234,8 @@ bag_filter_sum db =
     lt_5 :: Expr Number -> Expr Bool
     lt_5 v = v %< 5
 
-bag_filter_sum_noise :: CPSFuzz (Bag Number) -> CPSFuzzDistr Number
-bag_filter_sum_noise db =
+bag_filter_sum_noise :: CPSFuzz (Bag Number) -> CPSFuzz (Distr Number)
+bag_filter_sum_noise db = toDeepRepr $
   share (bag_filter_sum db) $
     \s -> do
       s1' <- lap 1.0 s
@@ -323,6 +324,20 @@ fvCPSFuzz' (CBind a f) inScope = do
   f' <- fvCPSFuzz' (f (CVar secretVarName)) (S.insert secretVarName inScope)
   return $ a' `S.union` f'
 fvCPSFuzz' (CLap _ c) inScope = fvCPSFuzz' c inScope
+
+substBMCS :: forall a r. Typeable r => String -> BMCS a -> BMCS r -> BMCS a
+substBMCS x term needle =
+  case term of
+    BVar y ->
+      if x == y
+      then case eqTypeRep (typeRep @a) (typeRep @r) of
+        Just HRefl -> needle
+        Nothing -> term
+      else term
+    BReturn m -> BReturn $ substBMCS x m needle
+    BBind m f -> BBind (substBMCS x m needle) (\r -> substBMCS x (f r) needle)
+    Green term -> Green term
+    Run _ _ _ _ -> term
 
 substCPSFuzz :: forall a r. Typeable r => String -> CPSFuzz a -> CPSFuzz r -> CPSFuzz a
 substCPSFuzz x term needle =
@@ -553,10 +568,11 @@ instance VecMonoid a => VecMonoid (Maybe a) where
   empty = Nothing
 
 instance Clip Number where
-  clip r a =
+  clip (Vec [r]) a =
     if a >= bound then bound else if a <= - bound then - bound else a
     where
       bound = abs r
+  clip _ _ = error "clip @Number: expect bound to have size 1"
 
 instance (Clip a, Clip b) => Clip (a, b) where
   clip r (a, b) = (clip r a, clip r b)
@@ -564,11 +580,33 @@ instance (Clip a, Clip b) => Clip (a, b) where
 instance Clip a => Clip (Maybe a) where
   clip r = fmap (clip r)
 
-mkIfCxtInstances ''VecStorable
-
-mkIfCxtInstances ''VecMonoid
-
-mkIfCxtInstances ''Clip
+-- | Manual and deferrable resolution of the `Clip` constraint for any typeable type.
+resolveClip :: forall (a :: *). Typeable a => Maybe (Dict (Clip a))
+resolveClip =
+  case eqTypeRep (typeRep @Number) (typeRep @a) of
+    Just HRefl -> Just Dict
+    _ -> do
+      case (typeRep @a) of
+        App maybeMaybe (a1 :: typeRep a1)
+          | SomeTypeRep maybeMaybe == SomeTypeRep (typeRep @Maybe) -> do
+              HRefl <- eqTypeRep (typeRepKind a1) (typeRepKind (typeRep @Int))
+              a1Dict <- withTypeable a1 $ resolveClip @a1
+              case eqTypeRep maybeMaybe (typeRep @Maybe) of
+                Just HRefl -> withDict a1Dict $ return (Dict @(Clip (Maybe a1)))
+                _ -> Nothing
+        App con (a2 :: typeRep a2) -> do
+          HRefl <- eqTypeRep (typeRepKind a2) (typeRepKind (typeRep @Int))
+          (a2Dict :: Dict (Clip a2)) <- withTypeable a2 $ resolveClip @a2
+          case con of
+            App maybeT2 (a1 :: TypeRep a1)
+              | SomeTypeRep maybeT2 == SomeTypeRep (typeRep @(,)) -> do
+                HRefl <- eqTypeRep (typeRepKind a1) (typeRepKind (typeRep @Int))
+                HRefl <- eqTypeRep (maybeT2) (typeRep @(,))
+                (a1Dict :: Dict (Clip a1)) <- withTypeable a1 $ resolveClip @a1
+                let tupleDict = withDict a1Dict $ withDict a2Dict $ Dict @(Clip (a1, a2))
+                return tupleDict
+            _ -> Nothing
+        _ -> Nothing
 
 instance Applicative (Mon f m) where
   pure a = Mon $ \k -> k a

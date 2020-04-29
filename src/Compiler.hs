@@ -5,19 +5,20 @@ module Compiler where
 import Control.Lens
 import Control.Monad.Catch
 import Control.Monad.State.Strict
+import Data.List (nub)
 import qualified Data.Map.Strict as M
 import Data.Proxy
 import qualified Data.Set as S
-import IfCxt
 import Lib
 import Names
 import Text.Printf
 import Type.Reflection
-import Data.List (nub)
+import GHC.Stack
+import Data.Constraint
 
 data Edge (from :: *) (to :: *) where
   Map :: Expr (from -> to) -> Edge (Bag from) (Bag to)
-  Sum :: Number -> Edge (Bag sum) sum
+  Sum :: Vec Number -> Edge (Bag sum) sum
 
 data AnyEdge :: * where
   AnyEdge ::
@@ -73,16 +74,33 @@ data SIMD f t
 makeLensesWith abbreviatedFields ''SIMD
 
 data CompilerError
-  = InternalError String
+  = -- | An internal error, this means a bug in the compiler.
+    InternalError String
   | -- | We need a type that satisfies `VecMonoid`
     --  but instead got this.
     RequiresVecMonoid SomeTypeRep
   | -- | We need a type that satisfies `Clip`, but
     --  instead got this.
     RequiresClip SomeTypeRep
-  | NoSuchEdge {from :: String, to :: String}
-  | TypeError {expected :: SomeTypeRep, observed :: SomeTypeRep}
+  | -- | Cannot find the computation step for computing `from` to `to.
+    NoSuchEdge {from :: String, to :: String}
+  | -- | A typecheck error.
+    TypeError {expected :: SomeTypeRep, observed :: SomeTypeRep}
+  | -- | The clip bound has incorrect representation size.
+    ClipSizeError {expectedSize :: Int, observedSize :: Int}
+  | -- | Code seems to be releasing private information
+    ReleasesPrivateData [String]
   deriving (Show, Eq, Ord, Typeable)
+
+data WithCallStack e = WithCallStack {
+  _wcsException :: e,
+  _wcsStack :: CallStack
+  }
+  deriving (Typeable)
+
+makeLensesWith abbreviatedFields ''WithCallStack
+
+type MonadThrowWithStack m = (MonadThrow m, HasCallStack)
 
 newtype Compiler a = Compiler {runCompiler_ :: StateT NameState (Either SomeException) a}
   deriving
@@ -92,16 +110,19 @@ newtype Compiler a = Compiler {runCompiler_ :: StateT NameState (Either SomeExce
 runCompiler :: Compiler a -> Either SomeException a
 runCompiler = flip evalStateT emptyNameState . runCompiler_
 
+throwM_ :: (HasCallStack, Exception e, MonadThrowWithStack m) => e -> m a
+throwM_ e = throwM (WithCallStack e callStack)
+
 -- | Takes the disjoint union of two maps.
 mergeEdges ::
-  MonadThrow m =>
+  MonadThrowWithStack m =>
   M.Map Direction AnyEdge ->
   M.Map Direction AnyEdge ->
   m (M.Map Direction AnyEdge)
 mergeEdges m1 m2 = do
   if M.disjoint m1 m2
     then return (M.union m1 m2)
-    else throwM . InternalError $ printf "directions %s are duplicated" (show duplicates)
+    else throwM_ . InternalError $ printf "directions %s are duplicated" (show duplicates)
   where
     duplicates = fmap fst (M.toList $ M.intersection m1 m2)
 
@@ -110,31 +131,31 @@ mergeNeighbors :: M.Map String [String] -> M.Map String [String] -> M.Map String
 mergeNeighbors = M.unionWith (++)
 
 mergeParents ::
-  MonadThrow m => M.Map String String -> M.Map String String -> m (M.Map String String)
+  MonadThrowWithStack m => M.Map String String -> M.Map String String -> m (M.Map String String)
 mergeParents m1 m2 = do
   if M.disjoint m1 m2
     then return (M.union m1 m2)
-    else throwM . InternalError $ printf "nodes %s have multiple parents" (show duplicates)
+    else throwM_ . InternalError $ printf "nodes %s have multiple parents" (show duplicates)
   where
     duplicates = fmap fst (M.toList $ M.intersection m1 m2)
 
 mergeTypes ::
-  MonadThrow m => M.Map String SomeTypeRep -> M.Map String SomeTypeRep -> m (M.Map String SomeTypeRep)
+  MonadThrowWithStack m => M.Map String SomeTypeRep -> M.Map String SomeTypeRep -> m (M.Map String SomeTypeRep)
 mergeTypes m1 m2 = do
   if M.disjoint m1 m2
     then return (M.union m1 m2)
-    else throwM . InternalError $ printf "nodes %s have multiple types" (show duplicates)
+    else throwM_ . InternalError $ printf "nodes %s have multiple types" (show duplicates)
   where
     duplicates = fmap fst (M.toList $ M.intersection m1 m2)
 
-merge :: MonadThrow m => EffectGraph -> EffectGraph -> m EffectGraph
+merge :: MonadThrowWithStack m => EffectGraph -> EffectGraph -> m EffectGraph
 merge m1 m2 = do
   m <- mergeEdges (m1 ^. edges) (m2 ^. edges)
   p <- mergeParents (m1 ^. parents) (m2 ^. parents)
   tys <- mergeTypes (m1 ^. types) (m2 ^. types)
   return $ EffectGraph m (mergeNeighbors (m1 ^. neighbors) (m2 ^. neighbors)) p tys
 
-insert :: forall toType m. (MonadThrow m, Typeable toType) => EffectGraph -> Direction -> AnyEdge -> m EffectGraph
+insert :: forall toType m. (MonadThrowWithStack m, Typeable toType) => EffectGraph -> Direction -> AnyEdge -> m EffectGraph
 insert m dir@(from, to) e =
   case M.lookup dir (m ^. edges) of
     Nothing ->
@@ -153,16 +174,16 @@ insert m dir@(from, to) e =
                 %~ M.insert to from
               & types
                 %~ M.insert to (SomeTypeRep (typeRep @toType))
-        Just _ -> throwM . InternalError $ printf "%s already has a parent" to
-    Just _ -> throwM . InternalError $ printf "direction %s is duplicated" (show dir)
+        Just _ -> throwM_ . InternalError $ printf "%s already has a parent" to
+    Just _ -> throwM_ . InternalError $ printf "direction %s is duplicated" (show dir)
 
-checkDbName :: MonadThrow m => CPSFuzz (Bag r) -> m String
+checkDbName :: MonadThrowWithStack m => CPSFuzz (Bag r) -> m String
 checkDbName (CVar x) = return x
 checkDbName _ =
-  throwM $ InternalError "checkDbName: compiled db terms should always be variables"
+  throwM_ $ InternalError "checkDbName: compiled db terms should always be variables"
 
 compileBinop' ::
-  (MonadThrow m, FreshM m) =>
+  (MonadThrowWithStack m, FreshM m) =>
   CPSFuzz a ->
   CPSFuzz b ->
   (CPSFuzz a -> CPSFuzz b -> CPSFuzz r) ->
@@ -176,7 +197,7 @@ compileBinop' a b f = do
 -- | Traces the BMCS effects of the input program. The resulting `sink` should
 --  compute the same value, but without any `BMap` or `BFilter` in its syntax
 --  tree. It also contains no `CShare` as an implementation detail...
-compile' :: (MonadThrow m, FreshM m) => CPSFuzz r -> m (MCSEffect r)
+compile' :: (MonadThrowWithStack m, FreshM m) => CPSFuzz r -> m (MCSEffect r)
 compile' (CVar x) = return $ MCSEffect emptyEG (CVar x)
 compile' (CNumLit n) = return $ MCSEffect emptyEG (CNumLit n)
 compile' (CAdd a b) = compileBinop' a b (+)
@@ -234,8 +255,14 @@ monadSimpl term =
 pureTranslateBool :: CPSFuzz Bool -> Expr Bool
 pureTranslateBool = undefined
 
-pureTranslate :: CPSFuzz Number -> Expr Number
+pureTranslate :: CPSFuzz a -> Expr a
 pureTranslate = undefined
+
+compile :: forall row a m. (FreshM m, MonadThrowWithStack m, Typeable row, Typeable a)
+  => String -> (CPSFuzz (Bag row) -> CPSFuzz (Distr a)) -> m (BMCS (Distr a))
+compile db prog = do
+  effects <- compile' (prog (CVar db))
+  codegen' @row db S.empty (effects ^. graph) (effects ^. sink)
 
 -- | Assuming the initial input db has type (Bag row), generate BMCS code for
 -- computing the normalized `CPSFuzz` program.
@@ -246,12 +273,23 @@ pureTranslate = undefined
 -- `g`: the traced `EffectGraph` for the whole program
 codegen' ::
   forall (row :: *) a m.
-  (Typeable row, Typeable a, FreshM m, MonadThrow m) =>
+  (Typeable row, Typeable a, FreshM m, MonadThrowWithStack m) =>
   String ->
   S.Set String ->
   EffectGraph ->
   CPSFuzz (Distr a) ->
   m (BMCS (Distr a))
+codegen' db inScope g (CBind m f) = do
+  m' <- codegen' @row db inScope g m
+  x <- gfresh "x"
+  f' <- codegen' @row db (S.insert x inScope) g (f (CVar x))
+  return $ BBind m' (substBMCS x f')
+codegen' _db inScope _ (CReturn m) = do
+  let fvs = S.toList (fvCPSFuzz m inScope)
+  case fvs of
+    [] -> do
+      return (BReturn (Green $ pureTranslate m))
+    _ -> throwM_ . ReleasesPrivateData $ fvs
 codegen' db inScope g (CLap c w) = do
   let fvs = S.toList (fvCPSFuzz w inScope)
   let sourceTerms :: M.Map String AnyExpr
@@ -261,84 +299,84 @@ codegen' db inScope g (CLap c w) = do
   -- 3. build release function using wExpr by
   --    substituting the projections for each of fvs into wExpr
   let wExpr = pureTranslate w
-  fvParents   <- traverse (getParent $ g ^. parents) fvs
+  fvParents <- traverse (getParent $ g ^. parents) fvs
   parentTypes <- traverse (getType $ g ^. types) fvParents
   let parentWithTypes = nub (zip fvParents parentTypes)
   case fvs of
     [] -> return (Green (ELap c wExpr))
-    _  -> codegenFusedMap' @row db parentWithTypes g $
+    _ -> codegenFusedMap' @row db parentWithTypes g $
       \(fusion :: SIMDFusion fs ts) -> do
-      let mf :: (Expr (fs -> ts)) = fusedMapFunction fusion
-      (fusedInput :: Expr fs) <- inject sourceTerms fusion
-      let inj :: (Expr (row -> fs)) = toDeepRepr $
-            \(input :: Expr row) -> substExpr db fusedInput input
-      summed <- gfresh "summed"
-      releaseExpr <- substWithProjection fusion (EVar summed) wExpr parentWithTypes
-      let releaseFun =
-            \(releaseTerm :: Expr ts) -> ELap c (substExpr summed releaseExpr releaseTerm)
-      ifCxt (Proxy :: Proxy (Clip ts))
-        -- TODO: fill in the clip bound here
-        (return $ Run (vecSize @ts) undefined (mf `ecomp` inj) (toDeepRepr releaseFun))
-        (throwM $ RequiresClip (SomeTypeRep (typeRep @ts)))
-  where getParent parents x =
-          case M.lookup x parents of
-            Just p -> return p
-            Nothing -> throwM . InternalError $
-              printf "codegen': %s has no parent" x
-        getType types x =
-          case M.lookup x types of
-            Just ty -> return ty
-            Nothing -> throwM . InternalError $
-              printf "codegen': %s has no known type" x
+        let mf :: (Expr (fs -> ts)) = fusedMapFunction fusion
+        (fusedInput :: Expr fs) <- inject sourceTerms fusion
+        let inj :: (Expr (row -> fs)) = toDeepRepr $
+              \(input :: Expr row) -> substExpr db fusedInput input
+        summed <- gfresh "summed"
+        releaseExpr <- substWithProjection fusion (EVar summed) wExpr parentWithTypes
+        let releaseFun =
+              \(releaseTerm :: Expr ts) -> ELap c (substExpr summed releaseExpr releaseTerm)
+        case resolveClip @ts of
+          Nothing -> throwM_ $ RequiresClip (SomeTypeRep (typeRep @ts))
+          Just dict -> withDict dict $
+            return $ Run (vecSize @ts) (Vec [0]) (mf `ecomp` inj) (toDeepRepr releaseFun)
+  where
+    getParent parents x =
+      case M.lookup x parents of
+        Just p -> return p
+        Nothing ->
+          throwM_ . InternalError $
+            printf "codegen': %s has no parent" x
+    getType types x =
+      case M.lookup x types of
+        Just ty -> return ty
+        Nothing ->
+          throwM_ . InternalError $
+            printf "codegen': %s has no known type" x
+    substWithProjection ::
+      forall fs ts a.
+      (Typeable fs, Typeable ts) =>
+      SIMDFusion fs ts ->
+      Expr ts ->
+      Expr a ->
+      [(String, SomeTypeRep)] ->
+      m (Expr a)
+    substWithProjection _ _ term [] = return term
+    substWithProjection fusion summed term ((x, xTR) : xs) =
+      case xTR of
+        SomeTypeRep (xDbType :: TypeRep xDbType) -> do
+          withTypeable xDbType $
+            withKindStar @_ @xDbType $
+            withTypeBag @xDbType $ \(_ :: Proxy xRowType) -> do
+            projX <- project @_ @ts @xRowType x fusion
+            term' <- substWithProjection fusion summed term xs
+            return $ substExpr x term' (projX %@ summed)
+codegen' _ _ _ _ = throwM_ . InternalError $ "codegen': unexpected CPSFuzz term"
 
-        substWithProjection :: forall fs ts a.
-          (Typeable fs, Typeable ts)
-          => SIMDFusion fs ts
-          -> Expr ts
-          -> Expr a
-          -> [(String, SomeTypeRep)]
-          -> m (Expr a)
-        substWithProjection _      _      term []            = return term
-        substWithProjection fusion summed term ((x, xTR):xs) =
-          case xTR of
-            SomeTypeRep (xRowType :: TypeRep xRowType) -> do
-              case eqTypeRep (typeRepKind xRowType) (typeRepKind (typeRep @Int)) of
-                Just HRefl ->
-                  withTypeable xRowType $ do
-                  projX <- project @_ @ts @xRowType x fusion
-                  term' <- substWithProjection fusion summed term xs
-                  return $ substExpr x term' (projX %@ summed)
-                Nothing -> throwM . InternalError $
-                  printf "codegen': expected %s row type to have kind *"
-                  x (show xRowType)
-
-codegenFusedMap' :: forall (row :: *) r m.
-  (Typeable row, FreshM m, MonadThrow m) =>
+codegenFusedMap' ::
+  forall (row :: *) r m.
+  (Typeable row, FreshM m, MonadThrowWithStack m) =>
   String ->
   [(String, SomeTypeRep)] ->
   EffectGraph ->
-  (forall fs ts. (Typeable fs, Typeable ts, IfCxt (Clip ts)) => SIMDFusion fs ts -> m r)
-  -> m r
-codegenFusedMap' db []         g kont =
-  throwM . InternalError $ "codegenFusedMap': expecting at least 1 free variable"
+  (forall fs ts. (Typeable fs, Typeable ts) => SIMDFusion fs ts -> m r) ->
+  m r
+codegenFusedMap' _db [] _g _kont =
+  throwM_ . InternalError $ "codegenFusedMap': expecting at least 1 free variable"
 codegenFusedMap' db [(x, xTR)] g kont =
   case xTR of
-    SomeTypeRep (xRowType :: TypeRep xRowType) ->
-      case eqTypeRep (typeRepKind xRowType) (typeRepKind (typeRep @Int)) of
-        Just HRefl ->
-          withTypeable xRowType $ do
-            f <- pullMapEffectsTrans' @row @xRowType g db x
-            kont (SIMD1 $ simd f db x)
-        _ -> throwM . InternalError $
-          printf "codegenFusedMap': expected %s row type %s to have kind *"
-          x (show xRowType)
-codegenFusedMap' db ((x, xTR):xs) g kont = do
-  codegenFusedMap' @row db [(x,xTR)] g $
+    SomeTypeRep (xDbType :: TypeRep xDbType) ->
+      withTypeable xDbType $
+      withKindStar @_ @xDbType $
+      withTypeBag @xDbType $ \(_ :: Proxy xRowType) ->
+      withKindStar @_ @xDbType $ do
+        f <- pullMapEffectsTrans' @row @xRowType g db x
+        kont (SIMD1 $ simd f db x)
+codegenFusedMap' db ((x, xTR) : xs) g kont = do
+  codegenFusedMap' @row db [(x, xTR)] g $
     \case
       SIMD1 (SIMD f from to) ->
         codegenFusedMap' @row db xs g $
-        \fusionXs -> kont (fuse fusionXs f from to)
-      _ -> throwM . InternalError $ "codegenFusedMap': expected SIMD1 here"
+          \fusionXs -> kont (fuse fusionXs f from to)
+      _ -> throwM_ . InternalError $ "codegenFusedMap': expected SIMD1 here"
 
 monadSimplLeft' :: forall a m. (Typeable a, FreshM m) => CPSFuzz a -> m (CPSFuzz a)
 monadSimplLeft' (CBind (CReturn (m :: CPSFuzz a')) f) = do
@@ -375,9 +413,9 @@ data AnyExpr :: * where
   AnyExpr :: Typeable r => Expr r -> AnyExpr
 
 data SIMDFusion f t where
-  SIMD1 :: (Typeable f, Typeable t, IfCxt (Clip t)) => SIMD f t -> SIMDFusion f t
+  SIMD1 :: (Typeable f, Typeable t) => SIMD f t -> SIMDFusion f t
   SIMDCons ::
-    (Typeable fs, Typeable ts, Typeable f, Typeable t, IfCxt (Clip (ts, t))) =>
+    (Typeable fs, Typeable ts, Typeable f, Typeable t) =>
     SIMDFusion fs ts ->
     SIMD f t ->
     SIMDFusion (fs, f) (ts, t)
@@ -386,11 +424,11 @@ simd :: Expr (f -> t) -> String -> String -> SIMD f t
 simd = SIMD
 
 fuse ::
-  (Typeable fs,
-   Typeable ts,
-   Typeable f,
-   Typeable t,
-   IfCxt (Clip (ts, t))) =>
+  ( Typeable fs,
+    Typeable ts,
+    Typeable f,
+    Typeable t
+  ) =>
   SIMDFusion fs ts ->
   Expr (f -> t) ->
   String ->
@@ -407,7 +445,7 @@ fusedMapFunction (SIMDCons fusion simd) =
 
 inject ::
   forall f t m.
-  (Typeable f, MonadThrow m) =>
+  (Typeable f, MonadThrowWithStack m) =>
   M.Map String AnyExpr ->
   SIMDFusion f t ->
   m (Expr f)
@@ -417,13 +455,13 @@ inject inputs (SIMD1 simd) = do
       case eqTypeRep (typeRep @f) (typeRep @f') of
         Just HRefl -> return e
         _ ->
-          throwM . InternalError $
+          throwM_ . InternalError $
             printf
               "inject: expected input %s to have type %s, but it has type %s"
               (simd ^. fromName)
               (show $ typeRep @f)
               (show $ typeRep @f')
-    Nothing -> throwM . InternalError $ printf "inject: unknown input name %s" (simd ^. fromName)
+    Nothing -> throwM_ . InternalError $ printf "inject: unknown input name %s" (simd ^. fromName)
 inject inputs (SIMDCons (fusion :: SIMDFusion fs1 _) (simd :: SIMD f1 _)) = do
   acc <- inject inputs fusion
   case M.lookup (simd ^. fromName) inputs of
@@ -431,13 +469,13 @@ inject inputs (SIMDCons (fusion :: SIMDFusion fs1 _) (simd :: SIMD f1 _)) = do
       case eqTypeRep (typeRep @f1) (typeRep @f') of
         Just HRefl -> return $ EPair acc e
         _ ->
-          throwM . InternalError $
+          throwM_ . InternalError $
             printf
               "inject: expected input %s to have type %s, but it has type %s"
               (simd ^. fromName)
               (show $ typeRep @f)
               (show $ typeRep @f')
-    Nothing -> throwM . InternalError $ printf "inject: unknown input name %s" (simd ^. fromName)
+    Nothing -> throwM_ . InternalError $ printf "inject: unknown input name %s" (simd ^. fromName)
 
 containsTo :: String -> SIMDFusion f t -> Bool
 containsTo x (SIMD1 simd) = (simd ^. toName) == x
@@ -446,7 +484,7 @@ containsTo x (SIMDCons fusion simd) =
 
 project ::
   forall f t r m.
-  (Typeable t, Typeable r, MonadThrow m) =>
+  (Typeable t, Typeable r, MonadThrowWithStack m) =>
   String ->
   SIMDFusion f t ->
   m (Expr (t -> r))
@@ -455,13 +493,13 @@ project x (SIMD1 simd) = do
     then case eqTypeRep (typeRep @r) (typeRep @t) of
       Just HRefl -> return . ELam $ \x -> x
       _ ->
-        throwM . InternalError $
+        throwM_ . InternalError $
           printf
-            "project: expected output name %s to have type %s, but it has type %s"
+            "project: expected output name %s to have type (%s), but it has type %s"
             x
             (show $ typeRep @t)
             (show $ typeRep @r)
-    else throwM . InternalError $ printf "project: unknown output name %s" x
+    else throwM_ . InternalError $ printf "project: unknown output name %s" x
 project x (SIMDCons (fusion :: SIMDFusion _ ts1) (simd :: SIMD _ t1)) =
   case (containsTo x fusion, x == simd ^. toName) of
     (True, False) -> do
@@ -471,19 +509,19 @@ project x (SIMDCons (fusion :: SIMDFusion _ ts1) (simd :: SIMD _ t1)) =
       case eqTypeRep (typeRep @t1) (typeRep @r) of
         Just HRefl -> return (ELam ESnd)
         Nothing ->
-          throwM . InternalError $
+          throwM_ . InternalError $
             printf
               "project: expected output %s to have type %s, but it has type %s"
               x
               (show $ typeRep @r)
               (show $ typeRep @t1)
     _ ->
-      throwM . InternalError $
+      throwM_ . InternalError $
         printf "project: expected output %s to appear on exactly one side" x
 
 pullMapEffectsTrans' ::
   forall (row1 :: *) (row2 :: *) m.
-  (MonadThrow m, FreshM m, Typeable row1, Typeable row2) =>
+  (MonadThrowWithStack m, FreshM m, Typeable row1, Typeable row2) =>
   EffectGraph ->
   String ->
   String ->
@@ -491,7 +529,7 @@ pullMapEffectsTrans' ::
 pullMapEffectsTrans' g from to =
   case M.lookup to (g ^. parents) of
     Nothing ->
-      throwM . InternalError $
+      throwM_ . InternalError $
         printf "pullMapEffectsTrans': orphaned node %s" to
     Just p ->
       if p == from
@@ -499,41 +537,29 @@ pullMapEffectsTrans' g from to =
         else do
           case M.lookup p (g ^. types) of
             Nothing ->
-              throwM . InternalError $
+              throwM_ . InternalError $
                 printf "pullMapEffectsTrans': node %s has no type" p
-            Just (SomeTypeRep (parentType :: TypeRep parentDb)) ->
-              let (parentTyCon, parentRowTypes) = splitApps parentType
-               in if parentTyCon == fst (splitApps (typeRep @Bag))
-                    && length parentRowTypes == 1
-                    then case parentRowTypes of
-                      [] -> error "impossible: we just checked this list has exactly 1 element"
-                      (SomeTypeRep (parentRowType :: TypeRep parentRow)) : _ ->
-                        -- this makes sure parentRowType has kind *
-                        case eqTypeRep (typeRepKind parentRowType) (typeRepKind (typeRep @Int)) of
-                          Just HRefl ->
-                            withTypeable parentRowType $ do
-                              mapParent <- pullMapEffectsTrans' @row1 @parentRow g from p
-                              mapTo <- pullMapEffectsTrans' @parentRow @row2 g p to
-                              return $ (mapTo `ecomp` mapParent)
-                          _ ->
-                            throwM . InternalError $
-                              printf
-                                "pullMapEffectsTrans': expected parent row type %s to have kind *"
-                                (show $ parentType)
-                    else
-                      throwM . InternalError $
-                        printf "pullMapEffectsTrans': expected parent type %s to be a Bag" (show $ parentType)
+            Just (SomeTypeRep (parentDb :: TypeRep parentDb)) ->
+              -- bunch of yucky proofs to make things kind and type check
+              withTypeable parentDb
+                $ withKindStar @_ @parentDb
+                $ withTypeBag @parentDb
+                $ \(_ :: Proxy parentRow) ->
+                  withKindStar @_ @parentRow $ do
+                    mapParent <- pullMapEffectsTrans' @row1 @parentRow g from p
+                    mapTo <- pullMapEffectsTrans' @parentRow @row2 g p to
+                    return $ (mapTo `ecomp` mapParent)
 
 pullMapEffectsStep' ::
   forall row1 row2 m.
-  (MonadThrow m, FreshM m, Typeable row1, Typeable row2) =>
+  (MonadThrowWithStack m, FreshM m, Typeable row1, Typeable row2) =>
   EffectGraph ->
   String ->
   String ->
   m (Expr (row1 -> row2))
 pullMapEffectsStep' g from to =
   case M.lookup (from, to) (g ^. edges) of
-    Nothing -> throwM $ NoSuchEdge from to
+    Nothing -> throwM_ $ NoSuchEdge from to
     Just (AnyEdge (e :: Edge fromDb toDb)) ->
       case ( eqTypeRep (typeRep @fromDb) (typeRep @(Bag row1)),
              eqTypeRep (typeRep @toDb) (typeRep @(Bag row2))
@@ -542,10 +568,10 @@ pullMapEffectsStep' g from to =
           case e of
             Map f -> return f
             Sum _ ->
-              throwM . InternalError $
+              throwM_ . InternalError $
                 printf "pullMapEffectsStep': expected edge (%s, %s) to be a map" from to
         _ ->
-          throwM . InternalError $
+          throwM_ . InternalError $
             printf
               "pullMapEffectsStep': expected edge (%s, %s) to have type %s but observed %s"
               from
@@ -553,12 +579,71 @@ pullMapEffectsStep' g from to =
               (show $ typeRep @(Edge (Bag row1) (Bag row2)))
               (show $ typeRep @(Edge fromDb toDb))
 
+pullClipSumBound' ::
+  forall row m.
+  (MonadThrowWithStack m, FreshM m, Typeable row, Clip row) =>
+  EffectGraph ->
+  String ->
+  String ->
+  m (Vec Number)
+pullClipSumBound' g from to =
+  case M.lookup (from, to) (g ^. edges) of
+    Nothing -> throwM_ $ NoSuchEdge from to
+    Just (AnyEdge (e :: Edge bagSum sum)) ->
+      withKindStar @_ @bagSum $
+      withKindStar @_ @sum $
+      withTypeBag @bagSum $ \(_ :: Proxy sum') ->
+      case ( eqTypeRep (typeRep @sum') (typeRep @sum)
+           , eqTypeRep (typeRep @sum) (typeRep @row)
+           ) of
+        (Just HRefl, Just HRefl) -> case e of
+          Sum clip ->
+            if vecSize @row == length clip
+            then return clip
+            else throwM_ $ ClipSizeError (vecSize @row) (length clip)
+          Map _ -> throwM_ . InternalError $
+            printf "pullClipSumBound': expected %s to be a sum edge" (show (from, to))
+        _ -> throwM_ . InternalError $
+          printf "pullClipSumBound': expected edge %s to have type %s -> %s, but observed %s -> %s"
+          (show (from, to)) (show $ typeRep @(Bag row)) (show $ typeRep @row)
+          (show $ typeRep @bagSum) (show $ typeRep @sum)
+
 -- ##################
 -- # INFRASTRUCTURE #
 -- ##################
+
+withTypeBag ::
+  forall db r m.
+  (Typeable db, MonadThrowWithStack m) =>
+  (forall row. (Typeable row, db ~ Bag row) => Proxy row -> m r) ->
+  m r
+withTypeBag k =
+  case (typeRep @db) of
+    App tyCon (tyArg :: TypeRep row) ->
+      case eqTypeRep tyCon (typeRep @Bag) of
+        Just HRefl -> withTypeable tyArg (k Proxy)
+        Nothing ->
+          throwM_ . InternalError $
+            printf "withTypeBag: expected type %s to be (Bag a)" (show $ typeRep @db)
+    _ ->
+      throwM_ . InternalError $
+        printf "withTypeBag: expected type %s to be (Bag a)" (show $ typeRep @db)
+
+withKindStar :: forall k (a :: k) r m. (Typeable a, MonadThrowWithStack m) => (k ~ * => m r) -> m r
+withKindStar k =
+  case eqTypeRep (typeRepKind (typeRep @a)) (typeRepKind (typeRep @Int)) of
+    Just HRefl -> k
+    _ ->
+      throwM_ . InternalError $
+        printf "withKindStar: expected type %s to have kind *" (show $ typeRep @a)
 
 instance FreshM Compiler where
   getNameState = get
   modifyNameState f = modify f
 
 instance Exception CompilerError
+instance Exception e => Exception (WithCallStack e)
+
+instance Exception e => Show (WithCallStack e) where
+  show (WithCallStack err stack) =
+    printf "WithCallStack\n  %s\n%s" (show err) (prettyCallStack stack)
