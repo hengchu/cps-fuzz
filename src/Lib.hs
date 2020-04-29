@@ -178,6 +178,7 @@ data BMCS (a :: *) where
   BEQ :: BMCS Number -> BMCS Number -> BMCS Bool
   BNEQ :: BMCS Number -> BMCS Number -> BMCS Bool
   BLap :: Number -> BMCS Number -> BMCS (Distr Number)
+  Green :: BT a => BMCS a -> BMCS a
   Run ::
     (Typeable row, Typeable sum, Clip sum) =>
     -- | vector representation size
@@ -377,6 +378,7 @@ substBMCS x term needle =
     BEQ a b -> BEQ (substBMCS x a needle) (substBMCS x b needle)
     BNEQ a b -> BNEQ (substBMCS x a needle) (substBMCS x b needle)
     BLap c w -> BLap c (substBMCS x w needle)
+    Green a -> Green (substBMCS x a needle)
     Run _ _ _ _ -> term
 
 substCPSFuzz :: forall a r. Typeable r => String -> CPSFuzz a -> CPSFuzz r -> CPSFuzz a

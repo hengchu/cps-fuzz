@@ -260,6 +260,9 @@ prettyBMCS p (BNEQ a b) =
 prettyBMCS p (BLap c w) = do
   w' <- prettyBMCS (precedenceTable "App" + associativityTable "App") w
   return $ parensIf (p > precedenceTable "App") (text "lap" <+> double c <+> w')
+prettyBMCS p (Green m) = do
+  m' <- prettyBMCS p m
+  return $ green m'
 
 parensIf :: Bool -> Doc -> Doc
 parensIf cond = if cond then parens else id

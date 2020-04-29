@@ -322,7 +322,7 @@ codegen' _db inScope _ (CReturn m) = do
   let fvs = S.toList (fvCPSFuzz m inScope)
   case fvs of
     [] -> do
-      return (BReturn (pureTranslate m))
+      return (Green $ BReturn (pureTranslate m))
     _ -> throwM_ . ReleasesPrivateData $ fvs
 codegen' db inScope g (CLap c w) = do
   let fvs = S.toList (fvCPSFuzz w inScope)
