@@ -5,16 +5,16 @@ module Compiler where
 import Control.Lens
 import Control.Monad.Catch
 import Control.Monad.State.Strict
+import Data.Constraint
 import Data.List (nub)
 import qualified Data.Map.Strict as M
 import Data.Proxy
 import qualified Data.Set as S
+import GHC.Stack
 import Lib
 import Names
 import Text.Printf
 import Type.Reflection
-import GHC.Stack
-import Data.Constraint
 
 data Edge (from :: *) (to :: *) where
   Map :: Expr (from -> to) -> Edge (Bag from) (Bag to)
@@ -92,10 +92,11 @@ data CompilerError
     ReleasesPrivateData [String]
   deriving (Show, Eq, Ord, Typeable)
 
-data WithCallStack e = WithCallStack {
-  _wcsException :: e,
-  _wcsStack :: CallStack
-  }
+data WithCallStack e
+  = WithCallStack
+      { _wcsException :: e,
+        _wcsStack :: CallStack
+      }
   deriving (Typeable)
 
 makeLensesWith abbreviatedFields ''WithCallStack
@@ -252,17 +253,32 @@ monadSimpl :: forall a m. (Typeable a, FreshM m) => CPSFuzz a -> m (CPSFuzz a)
 monadSimpl term =
   monadSimplLeft' term >>= monadSimplRight'
 
-pureTranslateBool :: CPSFuzz Bool -> Expr Bool
-pureTranslateBool = undefined
-
 pureTranslate :: CPSFuzz a -> Expr a
-pureTranslate = undefined
+pureTranslate (CVar x) = EVar x
+pureTranslate (CNumLit x) = ENumLit x
+pureTranslate (CAdd a b) = EAdd (pureTranslate a) (pureTranslate b)
+pureTranslate (CMinus a b) = EMinus (pureTranslate a) (pureTranslate b)
+pureTranslate (CMult a b) = EMult (pureTranslate a) (pureTranslate b)
+pureTranslate (CDiv a b) = EDiv (pureTranslate a) (pureTranslate b)
+pureTranslate (CAbs a) = EAbs (pureTranslate a)
+pureTranslate (CGT a b) = EGT (pureTranslate a) (pureTranslate b)
+pureTranslate (CGE a b) = EGE (pureTranslate a) (pureTranslate b)
+pureTranslate (CLT a b) = ELT (pureTranslate a) (pureTranslate b)
+pureTranslate (CLE a b) = ELE (pureTranslate a) (pureTranslate b)
+pureTranslate (CEQ a b) = EEQ (pureTranslate a) (pureTranslate b)
+pureTranslate (CNEQ a b) = ENEQ (pureTranslate a) (pureTranslate b)
+pureTranslate _ = error "pureTranslate: impure fragment"
 
-compile :: forall row a m. (FreshM m, MonadThrowWithStack m, Typeable row, Typeable a)
-  => String -> (CPSFuzz (Bag row) -> CPSFuzz (Distr a)) -> m (BMCS (Distr a))
+compile ::
+  forall row a m.
+  (FreshM m, MonadThrowWithStack m, Typeable row, Typeable a) =>
+  String ->
+  (CPSFuzz (Bag row) -> CPSFuzz (Distr a)) ->
+  m (BMCS (Distr a))
 compile db prog = do
   effects <- compile' (prog (CVar db))
-  codegen' @row db S.empty (effects ^. graph) (effects ^. sink)
+  simplifiedSink <- monadSimpl (effects ^. sink)
+  codegen' @row db S.empty (effects ^. graph) simplifiedSink
 
 -- | Assuming the initial input db has type (Bag row), generate BMCS code for
 -- computing the normalized `CPSFuzz` program.
@@ -316,8 +332,10 @@ codegen' db inScope g (CLap c w) = do
               \(releaseTerm :: Expr ts) -> ELap c (substExpr summed releaseExpr releaseTerm)
         case resolveClip @ts of
           Nothing -> throwM_ $ RequiresClip (SomeTypeRep (typeRep @ts))
-          Just dict -> withDict dict $
-            return $ Run (vecSize @ts) (Vec [0]) (mf `ecomp` inj) (toDeepRepr releaseFun)
+          Just dict ->
+            withDict dict
+              $ return
+              $ Run (vecSize @ts) (Vec [0]) (mf `ecomp` inj) (toDeepRepr releaseFun)
   where
     getParent parents x =
       case M.lookup x parents of
@@ -343,12 +361,13 @@ codegen' db inScope g (CLap c w) = do
     substWithProjection fusion summed term ((x, xTR) : xs) =
       case xTR of
         SomeTypeRep (xDbType :: TypeRep xDbType) -> do
-          withTypeable xDbType $
-            withKindStar @_ @xDbType $
-            withTypeBag @xDbType $ \(_ :: Proxy xRowType) -> do
-            projX <- project @_ @ts @xRowType x fusion
-            term' <- substWithProjection fusion summed term xs
-            return $ substExpr x term' (projX %@ summed)
+          withTypeable xDbType
+            $ withKindStar @_ @xDbType
+            $ withTypeBag @xDbType
+            $ \(_ :: Proxy xRowType) -> do
+              projX <- project @_ @ts @xRowType x fusion
+              term' <- substWithProjection fusion summed term xs
+              return $ substExpr x term' (projX %@ summed)
 codegen' _ _ _ _ = throwM_ . InternalError $ "codegen': unexpected CPSFuzz term"
 
 codegenFusedMap' ::
@@ -364,12 +383,13 @@ codegenFusedMap' _db [] _g _kont =
 codegenFusedMap' db [(x, xTR)] g kont =
   case xTR of
     SomeTypeRep (xDbType :: TypeRep xDbType) ->
-      withTypeable xDbType $
-      withKindStar @_ @xDbType $
-      withTypeBag @xDbType $ \(_ :: Proxy xRowType) ->
-      withKindStar @_ @xDbType $ do
-        f <- pullMapEffectsTrans' @row @xRowType g db x
-        kont (SIMD1 $ simd f db x)
+      withTypeable xDbType
+        $ withKindStar @_ @xDbType
+        $ withTypeBag @xDbType
+        $ \(_ :: Proxy xRowType) ->
+          withKindStar @_ @xDbType $ do
+            f <- pullMapEffectsTrans' @row @xRowType g db x
+            kont (SIMD1 $ simd f db x)
 codegenFusedMap' db ((x, xTR) : xs) g kont = do
   codegenFusedMap' @row db [(x, xTR)] g $
     \case
@@ -384,7 +404,7 @@ monadSimplLeft' (CBind (CReturn (m :: CPSFuzz a')) f) = do
   x <- gfresh "x"
   f' <- monadSimplLeft' (f (CVar x))
   return $ substCPSFuzz x f' m'
-monadSimplLeft' term = monadSimplLeft' term
+monadSimplLeft' term = return term
 
 isCReturn ::
   forall a b m.
@@ -407,7 +427,7 @@ monadSimplRight' (CBind (m :: CPSFuzz (Distr arg)) (f :: CPSFuzz arg -> CPSFuzz 
       x <- gfresh "x"
       f' <- monadSimplRight' (f (CVar x))
       return $ CBind m' (substCPSFuzz x f')
-monadSimplRight' term = monadSimplRight' term
+monadSimplRight' term = return term
 
 data AnyExpr :: * where
   AnyExpr :: Typeable r => Expr r -> AnyExpr
@@ -590,23 +610,30 @@ pullClipSumBound' g from to =
   case M.lookup (from, to) (g ^. edges) of
     Nothing -> throwM_ $ NoSuchEdge from to
     Just (AnyEdge (e :: Edge bagSum sum)) ->
-      withKindStar @_ @bagSum $
-      withKindStar @_ @sum $
-      withTypeBag @bagSum $ \(_ :: Proxy sum') ->
-      case ( eqTypeRep (typeRep @sum') (typeRep @sum)
-           , eqTypeRep (typeRep @sum) (typeRep @row)
-           ) of
-        (Just HRefl, Just HRefl) -> case e of
-          Sum clip ->
-            if vecSize @row == length clip
-            then return clip
-            else throwM_ $ ClipSizeError (vecSize @row) (length clip)
-          Map _ -> throwM_ . InternalError $
-            printf "pullClipSumBound': expected %s to be a sum edge" (show (from, to))
-        _ -> throwM_ . InternalError $
-          printf "pullClipSumBound': expected edge %s to have type %s -> %s, but observed %s -> %s"
-          (show (from, to)) (show $ typeRep @(Bag row)) (show $ typeRep @row)
-          (show $ typeRep @bagSum) (show $ typeRep @sum)
+      withKindStar @_ @bagSum
+        $ withKindStar @_ @sum
+        $ withTypeBag @bagSum
+        $ \(_ :: Proxy sum') ->
+          case ( eqTypeRep (typeRep @sum') (typeRep @sum),
+                 eqTypeRep (typeRep @sum) (typeRep @row)
+               ) of
+            (Just HRefl, Just HRefl) -> case e of
+              Sum clip ->
+                if vecSize @row == length clip
+                  then return clip
+                  else throwM_ $ ClipSizeError (vecSize @row) (length clip)
+              Map _ ->
+                throwM_ . InternalError $
+                  printf "pullClipSumBound': expected %s to be a sum edge" (show (from, to))
+            _ ->
+              throwM_ . InternalError $
+                printf
+                  "pullClipSumBound': expected edge %s to have type %s -> %s, but observed %s -> %s"
+                  (show (from, to))
+                  (show $ typeRep @(Bag row))
+                  (show $ typeRep @row)
+                  (show $ typeRep @bagSum)
+                  (show $ typeRep @sum)
 
 -- ##################
 -- # INFRASTRUCTURE #
@@ -642,6 +669,7 @@ instance FreshM Compiler where
   modifyNameState f = modify f
 
 instance Exception CompilerError
+
 instance Exception e => Exception (WithCallStack e)
 
 instance Exception e => Show (WithCallStack e) where

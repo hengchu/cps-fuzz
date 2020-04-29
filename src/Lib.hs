@@ -3,11 +3,11 @@
 module Lib where
 
 import Control.Monad.State.Strict
+import Data.Constraint
 import Data.Functor.Identity
 import qualified Data.Set as S
 import Names
 import Type.Reflection
-import Data.Constraint
 
 newtype Bag a = Bag [a]
   deriving (Show, Eq, Ord, Foldable, Functor, Traversable)
@@ -235,12 +235,12 @@ bag_filter_sum db =
     lt_5 v = v %< 5
 
 bag_filter_sum_noise :: CPSFuzz (Bag Number) -> CPSFuzz (Distr Number)
-bag_filter_sum_noise db = toDeepRepr $
-  share (bag_filter_sum db) $
-    \s -> do
-      s1' <- lap 1.0 s
-      s2' <- lap 2.0 s
-      return (s1' + s2')
+bag_filter_sum_noise db = toDeepRepr
+  $ share (bag_filter_sum db)
+  $ \s -> do
+    s1' <- lap 1.0 s
+    s2' <- lap 2.0 s
+    return (s1' + s2')
 
 bag_map_filter_sum :: CPSFuzz (Bag Number) -> CPSFuzz Number
 bag_map_filter_sum db =
@@ -330,10 +330,10 @@ substBMCS x term needle =
   case term of
     BVar y ->
       if x == y
-      then case eqTypeRep (typeRep @a) (typeRep @r) of
-        Just HRefl -> needle
-        Nothing -> term
-      else term
+        then case eqTypeRep (typeRep @a) (typeRep @r) of
+          Just HRefl -> needle
+          Nothing -> term
+        else term
     BReturn m -> BReturn $ substBMCS x m needle
     BBind m f -> BBind (substBMCS x m needle) (\r -> substBMCS x (f r) needle)
     Green term -> Green term
@@ -589,11 +589,11 @@ resolveClip =
       case (typeRep @a) of
         App maybeMaybe (a1 :: typeRep a1)
           | SomeTypeRep maybeMaybe == SomeTypeRep (typeRep @Maybe) -> do
-              HRefl <- eqTypeRep (typeRepKind a1) (typeRepKind (typeRep @Int))
-              a1Dict <- withTypeable a1 $ resolveClip @a1
-              case eqTypeRep maybeMaybe (typeRep @Maybe) of
-                Just HRefl -> withDict a1Dict $ return (Dict @(Clip (Maybe a1)))
-                _ -> Nothing
+            HRefl <- eqTypeRep (typeRepKind a1) (typeRepKind (typeRep @Int))
+            a1Dict <- withTypeable a1 $ resolveClip @a1
+            case eqTypeRep maybeMaybe (typeRep @Maybe) of
+              Just HRefl -> withDict a1Dict $ return (Dict @(Clip (Maybe a1)))
+              _ -> Nothing
         App con (a2 :: typeRep a2) -> do
           HRefl <- eqTypeRep (typeRepKind a2) (typeRepKind (typeRep @Int))
           (a2Dict :: Dict (Clip a2)) <- withTypeable a2 $ resolveClip @a2
