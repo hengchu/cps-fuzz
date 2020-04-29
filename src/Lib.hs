@@ -163,9 +163,24 @@ type BT a = Typeable a
 
 data BMCS (a :: *) where
   BVar :: BT a => String -> BMCS a
+  BNumLit :: Number -> BMCS Number
   BReturn :: BT a => BMCS a -> BMCS (Distr a)
   BBind :: BT a => BMCS (Distr a) -> (BMCS a -> BMCS (Distr b)) -> BMCS (Distr b)
-  Green :: BT r => Expr r -> BMCS r
+
+  BAdd :: BMCS Number -> BMCS Number -> BMCS Number
+  BMinus :: BMCS Number -> BMCS Number -> BMCS Number
+  BMult :: BMCS Number -> BMCS Number -> BMCS Number
+  BDiv :: BMCS Number -> BMCS Number -> BMCS Number
+  BAbs :: BMCS Number -> BMCS Number
+  BGT :: BMCS Number -> BMCS Number -> BMCS Bool
+  BGE :: BMCS Number -> BMCS Number -> BMCS Bool
+  BLT :: BMCS Number -> BMCS Number -> BMCS Bool
+  BLE :: BMCS Number -> BMCS Number -> BMCS Bool
+  BEQ :: BMCS Number -> BMCS Number -> BMCS Bool
+  BNEQ :: BMCS Number -> BMCS Number -> BMCS Bool
+
+  BLap :: Number -> BMCS Number -> BMCS (Distr Number)
+
   Run ::
     (Typeable row, Typeable sum, Clip sum) =>
     -- | vector representation size
@@ -334,9 +349,21 @@ substBMCS x term needle =
           Just HRefl -> needle
           Nothing -> term
         else term
+    BNumLit _ -> term
     BReturn m -> BReturn $ substBMCS x m needle
     BBind m f -> BBind (substBMCS x m needle) (\r -> substBMCS x (f r) needle)
-    Green term -> Green term
+    BAdd a b -> BAdd (substBMCS x a needle) (substBMCS x b needle)
+    BMinus a b -> BMinus (substBMCS x a needle) (substBMCS x b needle)
+    BMult a b -> BMult (substBMCS x a needle) (substBMCS x b needle)
+    BDiv a b -> BDiv (substBMCS x a needle) (substBMCS x b needle)
+    BAbs a -> BAbs (substBMCS x a needle)
+    BGT a b -> BGT (substBMCS x a needle) (substBMCS x b needle)
+    BGE a b -> BGE (substBMCS x a needle) (substBMCS x b needle)
+    BLT a b -> BLT (substBMCS x a needle) (substBMCS x b needle)
+    BLE a b -> BLE (substBMCS x a needle) (substBMCS x b needle)
+    BEQ a b -> BEQ (substBMCS x a needle) (substBMCS x b needle)
+    BNEQ a b -> BNEQ (substBMCS x a needle) (substBMCS x b needle)
+    BLap c w -> BLap c (substBMCS x w needle)
     Run _ _ _ _ -> term
 
 substCPSFuzz :: forall a r. Typeable r => String -> CPSFuzz a -> CPSFuzz r -> CPSFuzz a

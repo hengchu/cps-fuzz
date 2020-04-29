@@ -255,21 +255,37 @@ monadSimpl :: forall a m. (Typeable a, FreshM m) => CPSFuzz a -> m (CPSFuzz a)
 monadSimpl term =
   monadSimplLeft' term >>= monadSimplRight'
 
-pureTranslate :: CPSFuzz a -> Expr a
-pureTranslate (CVar x) = EVar x
-pureTranslate (CNumLit x) = ENumLit x
-pureTranslate (CAdd a b) = EAdd (pureTranslate a) (pureTranslate b)
-pureTranslate (CMinus a b) = EMinus (pureTranslate a) (pureTranslate b)
-pureTranslate (CMult a b) = EMult (pureTranslate a) (pureTranslate b)
-pureTranslate (CDiv a b) = EDiv (pureTranslate a) (pureTranslate b)
-pureTranslate (CAbs a) = EAbs (pureTranslate a)
-pureTranslate (CGT a b) = EGT (pureTranslate a) (pureTranslate b)
-pureTranslate (CGE a b) = EGE (pureTranslate a) (pureTranslate b)
-pureTranslate (CLT a b) = ELT (pureTranslate a) (pureTranslate b)
-pureTranslate (CLE a b) = ELE (pureTranslate a) (pureTranslate b)
-pureTranslate (CEQ a b) = EEQ (pureTranslate a) (pureTranslate b)
-pureTranslate (CNEQ a b) = ENEQ (pureTranslate a) (pureTranslate b)
+pureTranslate :: CPSFuzz a -> BMCS a
+pureTranslate (CVar x) = BVar x
+pureTranslate (CNumLit x) = BNumLit x
+pureTranslate (CAdd a b) = BAdd (pureTranslate a) (pureTranslate b)
+pureTranslate (CMinus a b) = BMinus (pureTranslate a) (pureTranslate b)
+pureTranslate (CMult a b) = BMult (pureTranslate a) (pureTranslate b)
+pureTranslate (CDiv a b) = BDiv (pureTranslate a) (pureTranslate b)
+pureTranslate (CAbs a) = BAbs (pureTranslate a)
+pureTranslate (CGT a b) = BGT (pureTranslate a) (pureTranslate b)
+pureTranslate (CGE a b) = BGE (pureTranslate a) (pureTranslate b)
+pureTranslate (CLT a b) = BLT (pureTranslate a) (pureTranslate b)
+pureTranslate (CLE a b) = BLE (pureTranslate a) (pureTranslate b)
+pureTranslate (CEQ a b) = BEQ (pureTranslate a) (pureTranslate b)
+pureTranslate (CNEQ a b) = BNEQ (pureTranslate a) (pureTranslate b)
 pureTranslate _ = error "pureTranslate: impure fragment"
+
+pureTranslateE :: CPSFuzz a -> Expr a
+pureTranslateE (CVar x) = EVar x
+pureTranslateE (CNumLit x) = ENumLit x
+pureTranslateE (CAdd a b) = EAdd (pureTranslateE a) (pureTranslateE b)
+pureTranslateE (CMinus a b) = EMinus (pureTranslateE a) (pureTranslateE b)
+pureTranslateE (CMult a b) = EMult (pureTranslateE a) (pureTranslateE b)
+pureTranslateE (CDiv a b) = EDiv (pureTranslateE a) (pureTranslateE b)
+pureTranslateE (CAbs a) = EAbs (pureTranslateE a)
+pureTranslateE (CGT a b) = EGT (pureTranslateE a) (pureTranslateE b)
+pureTranslateE (CGE a b) = EGE (pureTranslateE a) (pureTranslateE b)
+pureTranslateE (CLT a b) = ELT (pureTranslateE a) (pureTranslateE b)
+pureTranslateE (CLE a b) = ELE (pureTranslateE a) (pureTranslateE b)
+pureTranslateE (CEQ a b) = EEQ (pureTranslateE a) (pureTranslateE b)
+pureTranslateE (CNEQ a b) = ENEQ (pureTranslateE a) (pureTranslateE b)
+pureTranslateE _ = error "pureTranslate: impure fragment"
 
 compile ::
   forall row a m.
@@ -306,7 +322,7 @@ codegen' _db inScope _ (CReturn m) = do
   let fvs = S.toList (fvCPSFuzz m inScope)
   case fvs of
     [] -> do
-      return (BReturn (Green $ pureTranslate m))
+      return (BReturn (pureTranslate m))
     _ -> throwM_ . ReleasesPrivateData $ fvs
 codegen' db inScope g (CLap c w) = do
   let fvs = S.toList (fvCPSFuzz w inScope)
@@ -318,13 +334,13 @@ codegen' db inScope g (CLap c w) = do
   -- 2. fuse them all together
   -- 3. build release function using wExpr by
   --    substituting the projections for each of fvs into wExpr
-  let wExpr = pureTranslate w
+  let wExpr = pureTranslateE w
   fvParents <- traverse (getParent $ g ^. parents) fvs
   let fvWithTypesWithParent = nub $ zip (zip fvs fvTypes) fvParents
   parentTypes <- traverse (getType $ g ^. types) fvParents
   let parentWithTypes = nub (zip fvParents parentTypes)
   case fvs of
-    [] -> return (Green (ELap c wExpr))
+    [] -> return (BLap c (pureTranslate w))
     _ -> codegenFusedMap' @row db parentWithTypes g $
       \(fusion :: SIMDFusion fs ts) -> do
         let mf :: (Expr (fs -> ts)) = fusedMapFunction fusion

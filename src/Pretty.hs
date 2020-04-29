@@ -213,6 +213,7 @@ prettyCPSKont freshArgName k = do
 
 prettyBMCS :: Int -> BMCS a -> P Doc
 prettyBMCS _ (BVar x) = return $ text x
+prettyBMCS _ (BNumLit x) = return $ double x
 prettyBMCS p (BReturn w) = do
   w' <- prettyBMCS (precedenceTable "App" + associativityTable "App") w
   return $ parensIf (p > precedenceTable "App") (text "return" <+> w')
@@ -221,9 +222,6 @@ prettyBMCS _ (BBind m f) = do
   x <- gfresh "x"
   f' <- prettyBMCS 0 (f (BVar x))
   return $ vcat [text x <+> text "<-" <+> m', f']
-prettyBMCS p (Green e) = do
-  e' <- prettyExpr p e
-  return (green e')
 prettyBMCS p (Run reprSize bound mf rf) = do
   mf' <- prettyExpr (precedenceTable "App" + associativityTable "App" * 2) mf
   rf' <- prettyExpr (precedenceTable "App" + associativityTable "App" * 3) rf
@@ -232,6 +230,35 @@ prettyBMCS p (Run reprSize bound mf rf) = do
     $ vcat [text "bmcs" <+> int reprSize <+> text (show bound),
             indent 2 (red mf'),
             indent 2 (dullyellow rf')]
+prettyBMCS p (BAdd a b) = do
+  prettyBinop p "+" prettyBMCS a b
+prettyBMCS p (BMinus a b) = do
+  prettyBinop p "-" prettyBMCS a b
+prettyBMCS p (BMult a b) = do
+  prettyBinop p "*" prettyBMCS a b
+prettyBMCS p (BDiv a b) = do
+  prettyBinop p "/" prettyBMCS a b
+prettyBMCS p (BAbs a) = do
+  a' <- prettyBMCS (precedenceTable "App") a
+  return
+    $ parensIf (p > precedenceTable "App")
+    $ text "abs" <+> a'
+prettyBMCS p (BGT a b) =
+  prettyBinop p ">" prettyBMCS a b
+prettyBMCS p (BGE a b) =
+  prettyBinop p ">=" prettyBMCS a b
+prettyBMCS p (BLT a b) =
+  prettyBinop p "<" prettyBMCS a b
+prettyBMCS p (BLE a b) =
+  prettyBinop p "<=" prettyBMCS a b
+prettyBMCS p (BEQ a b) =
+  prettyBinop p "==" prettyBMCS a b
+prettyBMCS p (BNEQ a b) =
+  prettyBinop p "/=" prettyBMCS a b
+prettyBMCS p (BLap c w) = do
+  w' <- prettyBMCS (precedenceTable "App" + associativityTable "App") w
+  return $ parensIf (p > precedenceTable "App") (text "lap" <+> double c <+> w')
+
 
 parensIf :: Bool -> Doc -> Doc
 parensIf cond = if cond then parens else id
