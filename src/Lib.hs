@@ -166,7 +166,6 @@ data BMCS (a :: *) where
   BNumLit :: Number -> BMCS Number
   BReturn :: BT a => BMCS a -> BMCS (Distr a)
   BBind :: BT a => BMCS (Distr a) -> (BMCS a -> BMCS (Distr b)) -> BMCS (Distr b)
-
   BAdd :: BMCS Number -> BMCS Number -> BMCS Number
   BMinus :: BMCS Number -> BMCS Number -> BMCS Number
   BMult :: BMCS Number -> BMCS Number -> BMCS Number
@@ -178,9 +177,7 @@ data BMCS (a :: *) where
   BLE :: BMCS Number -> BMCS Number -> BMCS Bool
   BEQ :: BMCS Number -> BMCS Number -> BMCS Bool
   BNEQ :: BMCS Number -> BMCS Number -> BMCS Bool
-
   BLap :: Number -> BMCS Number -> BMCS (Distr Number)
-
   Run ::
     (Typeable row, Typeable sum, Clip sum) =>
     -- | vector representation size

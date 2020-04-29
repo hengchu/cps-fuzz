@@ -10,13 +10,13 @@ import Data.List (nub)
 import qualified Data.Map.Strict as M
 import Data.Proxy
 import qualified Data.Set as S
+import Debug.Trace
 import GHC.Stack
 import Lib
 import Names
+import Pretty
 import Text.Printf
 import Type.Reflection
-import Debug.Trace
-import Pretty
 
 data Edge (from :: *) (to :: *) where
   Map :: Expr (from -> to) -> Edge (Bag from) (Bag to)
@@ -351,13 +351,13 @@ codegen' db inScope g (CLap c w) = do
         let releaseFun =
               \(releaseTerm :: Expr ts) ->
                 let runDelayedSubsts t [] = t
-                    runDelayedSubsts t ((x, proj):more) =
+                    runDelayedSubsts t ((x, proj) : more) =
                       --trace x $
                       case proj releaseTerm of
                         AnyExpr needle ->
                           --traceShow (runP $ prettyExpr 0 needle) $
                           runDelayedSubsts (substExpr x t needle) more
-                in ELap c (runDelayedSubsts wExpr delayedSubsts)
+                 in ELap c (runDelayedSubsts wExpr delayedSubsts)
         case resolveClip @ts of
           Nothing -> throwM_ $ RequiresClip (SomeTypeRep (typeRep @ts))
           Just dict ->
@@ -383,16 +383,16 @@ codegen' db inScope g (CLap c w) = do
       SIMDFusion fs ts ->
       [((String, SomeTypeRep), String)] ->
       m [(String, Expr ts -> AnyExpr)]
-    substWithProjection _      []                       = return []
+    substWithProjection _ [] = return []
     substWithProjection fusion (((x, xTR), xParent) : xs) =
       case xTR of
         SomeTypeRep (xDbType :: TypeRep xRowType) -> do
-          withTypeable xDbType $
-            withKindStar @_ @xRowType $ do
+          withTypeable xDbType
+            $ withKindStar @_ @xRowType
+            $ do
               projX <- project @_ @ts @xRowType xParent fusion
               more <- substWithProjection fusion xs
-              return $ (x, \(summed :: Expr ts) -> AnyExpr (projX %@ summed)):more
-
+              return $ (x, \(summed :: Expr ts) -> AnyExpr (projX %@ summed)) : more
 codegen' _ _ _ _ = throwM_ . InternalError $ "codegen': unexpected CPSFuzz term"
 
 codegenFusedMap' ::
@@ -441,8 +441,8 @@ isCReturn f = do
   case f (CVar x) of
     CReturn (CVar y) ->
       if x == y
-      then return $ eqTypeRep (typeRep @a) (typeRep @b)
-      else return Nothing
+        then return $ eqTypeRep (typeRep @a) (typeRep @b)
+        else return Nothing
     _ -> return Nothing
 
 monadSimplRight' :: forall a m. (Typeable a, FreshM m) => CPSFuzz a -> m (CPSFuzz a)

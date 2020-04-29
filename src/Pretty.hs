@@ -227,9 +227,11 @@ prettyBMCS p (Run reprSize bound mf rf) = do
   rf' <- prettyExpr (precedenceTable "App" + associativityTable "App" * 3) rf
   return
     $ parensIf (p > precedenceTable "App")
-    $ vcat [text "bmcs" <+> int reprSize <+> text (show bound),
-            indent 2 (red mf'),
-            indent 2 (dullyellow rf')]
+    $ vcat
+      [ text "bmcs" <+> int reprSize <+> text (show bound),
+        indent 2 (red mf'),
+        indent 2 (dullyellow rf')
+      ]
 prettyBMCS p (BAdd a b) = do
   prettyBinop p "+" prettyBMCS a b
 prettyBMCS p (BMinus a b) = do
@@ -258,7 +260,6 @@ prettyBMCS p (BNEQ a b) =
 prettyBMCS p (BLap c w) = do
   w' <- prettyBMCS (precedenceTable "App" + associativityTable "App") w
   return $ parensIf (p > precedenceTable "App") (text "lap" <+> double c <+> w')
-
 
 parensIf :: Bool -> Doc -> Doc
 parensIf cond = if cond then parens else id
