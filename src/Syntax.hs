@@ -12,24 +12,26 @@ import Type.Reflection
 
 -- | Take the fixpoint of a functor-functor.
 data HFix (h :: (* -> *) -> * -> *) (f :: * -> *) (a :: *) where
-  HFix  :: h (HFix h f) a -> HFix h f a
+  HFix :: h (HFix h f) a -> HFix h f a
   Place :: f a -> HFix h f a
 
 class HXFunctor (h :: (* -> *) -> * -> *) where
-  hxmap :: (forall a. f a -> g a)
-        -> (forall a. g a -> f a)
-        -> (forall a. h f a -> h g a)
+  hxmap ::
+    (forall a. f a -> g a) ->
+    (forall a. g a -> f a) ->
+    (forall a. h f a -> h g a)
 
 -- | A variant of `HXFunctor` that allows mapping over constrained data. This
 -- assumes the constraint `c` can be satisfied by pattern matching on the
 -- constructors of h.
 class HXCFunctor (c :: * -> Constraint) (h :: (* -> *) -> * -> *) where
-  hxcmap :: (forall a. c a => f a -> g a)
-         -> (forall a. c a => g a -> f a)
-         -> (forall a. h f a -> h g a)
+  hxcmap ::
+    (forall a. c a => f a -> g a) ->
+    (forall a. c a => g a -> f a) ->
+    (forall a. h f a -> h g a)
 
 class Syntactic (f :: * -> *) a where
-  type family DeepRepr a :: *
+  type DeepRepr a :: *
   toDeepRepr :: a -> f (DeepRepr a)
   fromDeepRepr :: f (DeepRepr a) -> a
 
@@ -69,29 +71,41 @@ app :: (Typeable a, Typeable b) => Expr f (a -> b) -> Expr f a -> Expr f b
 app f t = inject (EAppF f t)
 
 -- | Catamorphism over a functor-functor.
-hcata :: forall h f.
-  HXFunctor h => (forall a. h f a -> f a) -> (forall a. HFix h f a -> f a)
-hcata _   (Place term) = term
+hcata ::
+  forall h f.
+  HXFunctor h =>
+  (forall a. h f a -> f a) ->
+  (forall a. HFix h f a -> f a)
+hcata _ (Place term) = term
 hcata alg (HFix term) = alg . go $ term
-  where go = hxmap (hcata alg) Place
+  where
+    go = hxmap (hcata alg) Place
 
-hccata :: forall c h f. HXCFunctor c h =>
-  (forall a. c a => h f a -> f a)
-  -> (forall a. c a => HFix h f a -> f a)
+hccata ::
+  forall c h f.
+  HXCFunctor c h =>
+  (forall a. c a => h f a -> f a) ->
+  (forall a. c a => HFix h f a -> f a)
 hccata alg =
   \case
     Place term -> term
     HFix term -> alg . go $ term
-    where go = hxcmap @c (hccata @c alg) Place
+  where
+    go = hxcmap @c (hccata @c alg) Place
 
-substExprF :: forall r f a. (Typeable r, Typeable a) =>
-   String -> (Expr f) r -> ExprF (Expr f) a -> (Expr f) a
+substExprF ::
+  forall r f a.
+  (Typeable r, Typeable a) =>
+  String ->
+  (Expr f) r ->
+  ExprF (Expr f) a ->
+  (Expr f) a
 substExprF x needle term@(EVarF y) =
   if x == y
-  then case eqTypeRep (typeRep @r) (typeRep @a) of
-         Just HRefl -> needle
-         Nothing -> inject term
-  else inject term
+    then case eqTypeRep (typeRep @r) (typeRep @a) of
+      Just HRefl -> needle
+      Nothing -> inject term
+    else inject term
 substExprF _ _ term = inject term
 
 substExpr :: (Typeable r, Typeable a) => String -> (Expr f) r -> (Expr (Expr f)) a -> (Expr f) a
@@ -116,8 +130,10 @@ instance Syntactic (Expr f) (Expr f a) where
   toDeepRepr = id
   fromDeepRepr = id
 
-instance (Typeable (DeepRepr a), Typeable (DeepRepr b), Syntactic (Expr f) a, Syntactic (Expr f) b)
-  => Syntactic (Expr f) (a -> b) where
+instance
+  (Typeable (DeepRepr a), Typeable (DeepRepr b), Syntactic (Expr f) a, Syntactic (Expr f) b) =>
+  Syntactic (Expr f) (a -> b)
+  where
   type DeepRepr (a -> b) = DeepRepr a -> DeepRepr b
 
   toDeepRepr f = lam $ toDeepRepr . f . fromDeepRepr
