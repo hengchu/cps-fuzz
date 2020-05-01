@@ -25,7 +25,8 @@ data HFix (h :: (* -> *) -> * -> *) (f :: * -> *) (a :: *) where
   Place :: f a -> HFix h f a
 
 class Subst (f :: * -> *) where
-  abstract :: f b -> Prim a -> Prim a -> f b
+  abstract :: Typeable a => f b -> Prim a -> Prim a -> f b
+  apply    :: Typeable a => f b -> Prim a -> f    a -> f b
 
 class HXFunctor (h :: (* -> *) -> * -> *) where
   hxmap ::
@@ -59,9 +60,9 @@ data ExprF :: (* -> *) -> * -> * where
   -- To map over a lambda, we generate a fresh `Prim`, run the HOAS lambda over
   -- the fresh `Prim`, which gives us the body of the lambda with type `r
   -- b`. The map function has type `forall a. r a -> g a`. So, we can get an `g
-  -- b` out of this. However, we need a function `Prim a -> g b`. So, we need to
-  -- re-abstract out the `Prim a` parameter that we just fed into the lambda. Is
-  -- that possible???
+  -- b` out of this. However, we need a function `Prim a -> g b` to reconstruct
+  -- the syntax. So, we need to re-abstract out the `Prim a` parameter that we
+  -- just fed into the lambda. Is that possible???
   --
   -- Basically, we need to write a function with type
   -- abstract :: g b -> Prim a -> Prim a -> g b
@@ -72,8 +73,38 @@ data ExprF :: (* -> *) -> * -> * where
   -- This seems like it's basically substitution. But, we don't know anything
   -- about `g`. So, we need `g` to be some a functor-like structure that
   -- supports substitution.
+  --
+  -- Furthermore, if we actually want to interpret this language, then we need
+  -- to convert a function from `Prim a -> r b` into `r a -> r b`. This means,
+  -- in general, we need
+  -- apply :: r b -> Prim a -> r a -> r b
+  --          ^ the body of the lambda with the fresh prim we just fed into it
+  --                 ^ the fresh prim
+  --                           ^ the "value" of the fresh prim
+  --
+  -- So, whatever domain we are interpreting into, that domain needs to be able
+  -- to represent structures with holes in it. Because that's what it means to
+  -- interpret potentially open programs.
   ELamF :: (Typeable a, Typeable b) => (r a -> r b) -> ExprF r (a -> b)
   EAppF :: (Typeable a, Typeable b) => r (a -> b) -> r a -> ExprF r b
+
+data ExprF2 :: (* -> *) -> * -> * where
+  EValF2 :: Typeable a => r a -> ExprF2 r a
+  EVarF2 :: Typeable a => Prim a -> ExprF2 r a
+  ELamF2 :: (Typeable a, Typeable b) => (Prim a -> r b) -> ExprF2 r (a -> b)
+  EAppF2 :: (Typeable a, Typeable b) => r (a -> b) -> r a -> ExprF2 r b
+
+instance Subst r => Subst (ExprF2 r) where
+  abstract (EValF2 v)  x y = EValF2 (abstract v x y)
+  abstract (EVarF2 (x' :: Prim b)) (x :: Prim a) y =
+    case eqTypeRep (typeRep @b) (typeRep @a) of
+      Just HRefl -> if x' == x then EVarF2 y else EVarF2 x'
+      _ -> EVarF2 x'
+  abstract (ELamF2 f) x y =
+    let body = \z -> abstract (f z) x y
+    in ELamF2 body
+    where fresh = undefined
+  abstract (EAppF2 a b) x y = EAppF2 (abstract a x y) (abstract b x y)
 
 data Prim :: * -> * where
   Prim :: String -> Prim a
