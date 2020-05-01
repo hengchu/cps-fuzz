@@ -21,8 +21,11 @@ instance Monoid m => Monoid (K m b) where
 
 -- | Take the fixpoint of a functor-functor.
 data HFix (h :: (* -> *) -> * -> *) (f :: * -> *) (a :: *) where
-  HFix :: h (HFix h f) a -> HFix h f a
+  HFix  :: h (HFix h f) a -> HFix h f a
   Place :: f a -> HFix h f a
+
+class Subst (f :: * -> *) where
+  abstract :: f b -> Prim a -> Prim a -> f b
 
 class HXFunctor (h :: (* -> *) -> * -> *) where
   hxmap ::
@@ -46,14 +49,41 @@ class Syntactic (f :: * -> *) a where
 
 data ExprF :: (* -> *) -> * -> * where
   EVarF :: Typeable a => String -> ExprF r a
+  -- Notes: we could make the HOAS representation of type (Prim a) -> (r b),
+  -- thus, making sure the lambda is parametric in terms of input, and get rid
+  -- of r in the negative position.
+  --
+  -- This can potentially allow us to get rid of `Place`, and make `ExprF` a
+  -- functor instead of an exponential functor.
+  --
+  -- To map over a lambda, we generate a fresh `Prim`, run the HOAS lambda over
+  -- the fresh `Prim`, which gives us the body of the lambda with type `r
+  -- b`. The map function has type `forall a. r a -> g a`. So, we can get an `g
+  -- b` out of this. However, we need a function `Prim a -> g b`. So, we need to
+  -- re-abstract out the `Prim a` parameter that we just fed into the lambda. Is
+  -- that possible???
+  --
+  -- Basically, we need to write a function with type
+  -- abstract :: g b -> Prim a -> Prim a -> g b
+  --             ^ the body of the lambda with the fresh prim we just fed into it
+  --                    ^ the fresh prim that we used
+  --                              ^ the new abstract prim
+  --
+  -- This seems like it's basically substitution. But, we don't know anything
+  -- about `g`. So, we need `g` to be some a functor-like structure that
+  -- supports substitution.
   ELamF :: (Typeable a, Typeable b) => (r a -> r b) -> ExprF r (a -> b)
   EAppF :: (Typeable a, Typeable b) => r (a -> b) -> r a -> ExprF r b
+
+data Prim :: * -> * where
+  Prim :: String -> Prim a
+  deriving (Show, Eq, Ord)
 
 instance HXFunctor ExprF where
   hxmap f g =
     \case
       EVarF x -> EVarF x
-      ELamF lam -> ELamF (f . lam . g)
+      ELamF lam -> ELamF $ (f . lam . g)
       EAppF lam arg -> EAppF (f lam) (f arg)
 
 instance HXCFunctor Typeable ExprF where
