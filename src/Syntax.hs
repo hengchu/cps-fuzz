@@ -8,10 +8,17 @@ module Syntax where
 --import Names
 
 import Data.Kind
+import qualified Data.Set as S
 import Type.Reflection
+
+import Names
+import Text.PrettyPrint.ANSI.Leijen
 
 newtype K a b = K a
   deriving (Show, Eq, Ord, Functor)
+
+unK :: K a b -> a
+unK (K a) = a
 
 instance Semigroup m => Semigroup (K m b) where
   (K a) <> (K b) = K (a <> b)
@@ -192,6 +199,20 @@ substExprF _ _ term = inject term
 substExpr :: (Typeable r, Typeable a) => String -> (Expr f) r -> (Expr (Expr f)) a -> (Expr f) a
 substExpr x needle = hccata @Typeable (substExprF x needle)
 
+fvF :: FreshM m => ExprF (K (m (S.Set String))) a -> K (m (S.Set String)) a
+fvF (EVarF x) = K . return $ S.singleton x
+fvF (ELamF f) = K $ do
+  x <- gfresh "x"
+  body <- unK $ f (K $ return (S.singleton x))
+  return $ S.delete x body
+fvF (EAppF a b) = K $ do
+  a' <- unK a
+  b' <- unK b
+  return (S.union a' b')
+
+fv :: FreshM m => (forall f. Expr f a) -> m (S.Set String)
+fv = unK . hcata fvF
+
 -- ############
 -- # EXAMPLES #
 -- ############
@@ -200,7 +221,7 @@ example1 :: forall f. Expr f (Int -> Int)
 example1 = toDeepRepr $ \(x :: Expr f Int) -> x
 
 example2 :: Expr f Bool
-example2 = inject (EVarF "x")
+example2 = inject (EVarF "y")
 
 example3 :: forall f. Expr f (Int -> Bool)
 example3 = toDeepRepr $ \(_ :: Expr f Int) -> (example2 @f)
@@ -222,3 +243,28 @@ instance
 
   toDeepRepr f = lam $ toDeepRepr . f . fromDeepRepr
   fromDeepRepr f = fromDeepRepr . app f . toDeepRepr
+
+-- Everything below this commment should be in its own module.
+
+-- ##################
+-- # Pretty Printer #
+-- ##################
+prettyExprF ::
+  FreshM m =>
+  ExprF (K (m Doc)) a
+  -> K (m Doc) a
+prettyExprF (EVarF x) = K $ do
+  return $ text x
+prettyExprF (ELamF f) = K $ do
+  x' <- gfresh "x"
+  body <- unK $ f (K $ return (text x'))
+  return $ text "\\" <> text x' <+> text "->" <+> body
+prettyExprF (EAppF a b) = K $ do
+  a' <- unK a
+  b' <- unK b
+  return $ parens $ a' <+> b'
+
+prettyExpr :: FreshM m =>
+  (forall f. Expr f a)
+  -> m Doc
+prettyExpr = unK . hcata prettyExprF
