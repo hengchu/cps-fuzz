@@ -24,9 +24,8 @@ data HFix (h :: (* -> *) -> * -> *) (f :: * -> *) (a :: *) where
   HFix  :: h (HFix h f) a -> HFix h f a
   Place :: f a -> HFix h f a
 
-class Subst (f :: * -> *) where
-  abstract :: Typeable a => f b -> Prim a -> Prim a -> f b
-  apply    :: Typeable a => f b -> Prim a -> f    a -> f b
+data HFix2 (h :: (* -> *) -> * -> *) (a :: *) where
+  HFix2 :: h (HFix2 h) a -> HFix2 h a
 
 class HXFunctor (h :: (* -> *) -> * -> *) where
   hxmap ::
@@ -88,27 +87,23 @@ data ExprF :: (* -> *) -> * -> * where
   ELamF :: (Typeable a, Typeable b) => (r a -> r b) -> ExprF r (a -> b)
   EAppF :: (Typeable a, Typeable b) => r (a -> b) -> r a -> ExprF r b
 
-data ExprF2 :: (* -> *) -> * -> * where
-  EValF2 :: Typeable a => r a -> ExprF2 r a
-  EVarF2 :: Typeable a => Prim a -> ExprF2 r a
-  ELamF2 :: (Typeable a, Typeable b) => (Prim a -> r b) -> ExprF2 r (a -> b)
-  EAppF2 :: (Typeable a, Typeable b) => r (a -> b) -> r a -> ExprF2 r b
-
-instance Subst r => Subst (ExprF2 r) where
-  abstract (EValF2 v)  x y = EValF2 (abstract v x y)
-  abstract (EVarF2 (x' :: Prim b)) (x :: Prim a) y =
-    case eqTypeRep (typeRep @b) (typeRep @a) of
-      Just HRefl -> if x' == x then EVarF2 y else EVarF2 x'
-      _ -> EVarF2 x'
-  abstract (ELamF2 f) x y =
-    let body = \z -> abstract (f z) x y
-    in ELamF2 body
-    where fresh = undefined
-  abstract (EAppF2 a b) x y = EAppF2 (abstract a x y) (abstract b x y)
-
-data Prim :: * -> * where
-  Prim :: String -> Prim a
-  deriving (Show, Eq, Ord)
+--data ExprF2 :: (* -> *) -> * -> * where
+--  EValF2 :: Typeable a =>      a -> ExprF2 r a
+--  EVarF2 :: Typeable a => String -> ExprF2 r a
+--  -- This function space `Prim a -> r a` is still too large. In particular we
+--  -- cannot actually implement the `apply` function described above (unless r ~
+--  -- HFix ExprF2 r (morally)). This means we will not be able to fold over this
+--  -- structure in any meaningful way through catamorphisms.
+--  --
+--  -- We could use a further restricted function space of `PrimE a -> PrimE
+--  -- b`. But, `PrimE` must be a closed fixpoint of `ExprF2` itself, destroying
+--  -- the open recursion... But maybe that's OK for this use case?
+--  --
+--  -- But, this is unsatisfying. Any algebra over this term must invoke
+--  -- catamorphism within the algebra! That could raise serious complexity
+--  -- issues.
+--  ELamF2 :: (Typeable a, Typeable b) => (HFix2 ExprF2 a -> HFix2 ExprF2 b) -> ExprF2 r (a -> b)
+--  EAppF2 :: (Typeable a, Typeable b) => r (a -> b) -> r a -> ExprF2 r b
 
 instance HXFunctor ExprF where
   hxmap f g =
@@ -116,6 +111,14 @@ instance HXFunctor ExprF where
       EVarF x -> EVarF x
       ELamF lam -> ELamF $ (f . lam . g)
       EAppF lam arg -> EAppF (f lam) (f arg)
+
+--instance HXFunctor ExprF2 where
+--  hxmap f _ =
+--    \case
+--      EValF2 x -> EValF2 x
+--      EVarF2 x -> EVarF2 x
+--      ELamF2 lam -> ELamF2 lam
+--      EAppF2 lam arg -> EAppF2 (f lam) (f arg)
 
 instance HXCFunctor Typeable ExprF where
   hxcmap f g =
@@ -134,16 +137,17 @@ inject = HFix
 place :: f a -> HFix h f a
 place = Place
 
-injectExprF :: ExprF (HFix ExprF f) a -> Expr f a
-injectExprF = inject
-
 lam :: (Typeable a, Typeable b) => (Expr f a -> Expr f b) -> Expr f (a -> b)
 lam t = inject (ELamF t)
 
 app :: (Typeable a, Typeable b) => Expr f (a -> b) -> Expr f a -> Expr f b
 app f t = inject (EAppF f t)
 
--- | Catamorphism over a functor-functor.
+-- | Catamorphism over a functor-functor. But wait a second, can't we just
+-- instantiate `f` with some monad? I guess that's OK... If `a` is a monadic
+-- type, then we just have layers of uncomposed monads. The result will not be a
+-- monad transformer stack, as the binds of `f` do not propagate into `a`, but
+-- that's OK maybe?
 hcata ::
   forall h f.
   HXFunctor h =>
