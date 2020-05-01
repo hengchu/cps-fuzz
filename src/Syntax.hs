@@ -10,6 +10,15 @@ module Syntax where
 import Data.Kind
 import Type.Reflection
 
+newtype K a b = K a
+  deriving (Show, Eq, Ord, Functor)
+
+instance Semigroup m => Semigroup (K m b) where
+  (K a) <> (K b) = K (a <> b)
+
+instance Monoid m => Monoid (K m b) where
+  mempty = K mempty
+
 -- | Take the fixpoint of a functor-functor.
 data HFix (h :: (* -> *) -> * -> *) (f :: * -> *) (a :: *) where
   HFix :: h (HFix h f) a -> HFix h f a
@@ -61,6 +70,9 @@ type Expr (f :: * -> *) = HFix ExprF f
 inject :: h (HFix h f) a -> HFix h f a
 inject = HFix
 
+place :: f a -> HFix h f a
+place = Place
+
 injectExprF :: ExprF (HFix ExprF f) a -> Expr f a
 injectExprF = inject
 
@@ -79,7 +91,7 @@ hcata ::
 hcata _ (Place term) = term
 hcata alg (HFix term) = alg . go $ term
   where
-    go = hxmap (hcata alg) Place
+    go = hxmap (hcata alg) place
 
 hccata ::
   forall c h f.
@@ -91,7 +103,11 @@ hccata alg =
     Place term -> term
     HFix term -> alg . go $ term
   where
-    go = hxcmap @c (hccata @c alg) Place
+    go = hxcmap @c (hccata @c alg) place
+
+-- ##################
+-- # LANGUAGE TOOLS #
+-- ##################
 
 substExprF ::
   forall r f a.
@@ -120,6 +136,9 @@ example1 = toDeepRepr $ \(x :: Expr f Int) -> x
 
 example2 :: Expr f Bool
 example2 = inject (EVarF "x")
+
+example3 :: forall f. Expr f (Int -> Bool)
+example3 = toDeepRepr $ \(_ :: Expr f Int) -> (example2 @f)
 
 -- ##################
 -- # INFRASTRUCTURE #

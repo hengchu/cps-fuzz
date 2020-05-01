@@ -240,7 +240,7 @@ bag_filter_sum db =
         \lt_5_db -> bmapNothing 0 lt_5_db $
           \lt_5_db -> bsum 20 gt_10_db $
             \gt_10_sum -> bsum 5 lt_5_db $
-              \lt_10_sum -> gt_10_sum + lt_10_sum
+              \lt_5_sum -> gt_10_sum + lt_5_sum
   where
     gt_10 :: Expr Number -> Expr Bool
     gt_10 v = v %> 10
@@ -562,11 +562,11 @@ instance Num (Vec Number) where
   (Vec as) * (Vec bs) = Vec (zipWith (*) as bs)
   abs (Vec as) = Vec (map abs as)
   signum _ = error "signum: Vec Number has no signum"
-  fromInteger _ = error "fromInteger: Vec Number cannot be constructed from Integer"
+  fromInteger x = Vec [fromInteger x] --error "fromInteger: Vec Number cannot be constructed from Integer"
 
 instance Fractional (Vec Number) where
   (Vec as) / (Vec bs) = Vec (zipWith (/) as bs)
-  fromRational _ = error "fromRational: Vec Number cannot be constructed from Rational"
+  fromRational x = Vec [fromRational x] --error "fromRational: Vec Number cannot be constructed from Rational"
 
 instance VecStorable Number where
   vecSize = 1
