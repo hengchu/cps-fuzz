@@ -10,6 +10,7 @@ module Syntax where
 import Data.Kind
 import qualified Data.Set as S
 import Type.Reflection
+import Data.Functor.Identity
 
 import Names
 import Text.PrettyPrint.ANSI.Leijen
@@ -17,22 +18,24 @@ import Text.PrettyPrint.ANSI.Leijen
 newtype K a b = K a
   deriving (Show, Eq, Ord, Functor)
 
+infixl 6 :+:
+
+data (f :: (* -> *) -> * -> *) :+: (g :: (* -> *) -> * -> *) :: (* -> *) -> * -> * where
+  Inl :: f r a -> (f :+: g) r a
+  Inr :: g r a -> (f :+: g) r a
+
 unK :: K a b -> a
 unK (K a) = a
-
-instance Semigroup m => Semigroup (K m b) where
-  (K a) <> (K b) = K (a <> b)
-
-instance Monoid m => Monoid (K m b) where
-  mempty = K mempty
 
 -- | Take the fixpoint of a functor-functor.
 data HFix (h :: (* -> *) -> * -> *) (f :: * -> *) (a :: *) where
   HFix  :: h (HFix h f) a -> HFix h f a
   Place :: f a -> HFix h f a
 
-data HFix2 (h :: (* -> *) -> * -> *) (a :: *) where
-  HFix2 :: h (HFix2 h) a -> HFix2 h a
+class Inject
+  (f :: (* -> *) -> * -> *)
+  (g :: (* -> *) -> * -> *) where
+  inject' :: f r a -> g r a
 
 class HXFunctor (h :: (* -> *) -> * -> *) where
   hxmap ::
@@ -54,63 +57,23 @@ class Syntactic (f :: * -> *) a where
   toDeepRepr :: a -> f (DeepRepr a)
   fromDeepRepr :: f (DeepRepr a) -> a
 
+type Distr  = Identity
+type Number = Double
+
 data ExprF :: (* -> *) -> * -> * where
   EVarF :: Typeable a => String -> ExprF r a
-  -- Notes: we could make the HOAS representation of type (Prim a) -> (r b),
-  -- thus, making sure the lambda is parametric in terms of input, and get rid
-  -- of r in the negative position.
-  --
-  -- This can potentially allow us to get rid of `Place`, and make `ExprF` a
-  -- functor instead of an exponential functor.
-  --
-  -- To map over a lambda, we generate a fresh `Prim`, run the HOAS lambda over
-  -- the fresh `Prim`, which gives us the body of the lambda with type `r
-  -- b`. The map function has type `forall a. r a -> g a`. So, we can get an `g
-  -- b` out of this. However, we need a function `Prim a -> g b` to reconstruct
-  -- the syntax. So, we need to re-abstract out the `Prim a` parameter that we
-  -- just fed into the lambda. Is that possible???
-  --
-  -- Basically, we need to write a function with type
-  -- abstract :: g b -> Prim a -> Prim a -> g b
-  --             ^ the body of the lambda with the fresh prim we just fed into it
-  --                    ^ the fresh prim that we used
-  --                              ^ the new abstract prim
-  --
-  -- This seems like it's basically substitution. But, we don't know anything
-  -- about `g`. So, we need `g` to be some a functor-like structure that
-  -- supports substitution.
-  --
-  -- Furthermore, if we actually want to interpret this language, then we need
-  -- to convert a function from `Prim a -> r b` into `r a -> r b`. This means,
-  -- in general, we need
-  -- apply :: r b -> Prim a -> r a -> r b
-  --          ^ the body of the lambda with the fresh prim we just fed into it
-  --                 ^ the fresh prim
-  --                           ^ the "value" of the fresh prim
-  --
-  -- So, whatever domain we are interpreting into, that domain needs to be able
-  -- to represent structures with holes in it. Because that's what it means to
-  -- interpret potentially open programs.
   ELamF :: (Typeable a, Typeable b) => (r a -> r b) -> ExprF r (a -> b)
   EAppF :: (Typeable a, Typeable b) => r (a -> b) -> r a -> ExprF r b
 
---data ExprF2 :: (* -> *) -> * -> * where
---  EValF2 :: Typeable a =>      a -> ExprF2 r a
---  EVarF2 :: Typeable a => String -> ExprF2 r a
---  -- This function space `Prim a -> r a` is still too large. In particular we
---  -- cannot actually implement the `apply` function described above (unless r ~
---  -- HFix ExprF2 r (morally)). This means we will not be able to fold over this
---  -- structure in any meaningful way through catamorphisms.
---  --
---  -- We could use a further restricted function space of `PrimE a -> PrimE
---  -- b`. But, `PrimE` must be a closed fixpoint of `ExprF2` itself, destroying
---  -- the open recursion... But maybe that's OK for this use case?
---  --
---  -- But, this is unsatisfying. Any algebra over this term must invoke
---  -- catamorphism within the algebra! That could raise serious complexity
---  -- issues.
---  ELamF2 :: (Typeable a, Typeable b) => (HFix2 ExprF2 a -> HFix2 ExprF2 b) -> ExprF2 r (a -> b)
---  EAppF2 :: (Typeable a, Typeable b) => r (a -> b) -> r a -> ExprF2 r b
+  ELaplaceF :: Number -> r Number -> ExprF r (Distr Number)
+  EReturnF  :: Typeable a => r a -> ExprF r (Distr a)
+  EBindF    :: (Typeable a, Typeable b) => r a -> r (a -> Distr b) -> ExprF r (Distr b)
+
+instance (HXFunctor f, HXFunctor g) => HXFunctor (f :+: g) where
+  hxmap f g =
+    \case
+      Inl left -> Inl $ hxmap f g left
+      Inr right -> Inr $ hxmap f g right
 
 instance HXFunctor ExprF where
   hxmap f g =
@@ -118,14 +81,15 @@ instance HXFunctor ExprF where
       EVarF x -> EVarF x
       ELamF lam -> ELamF $ (f . lam . g)
       EAppF lam arg -> EAppF (f lam) (f arg)
+      ELaplaceF c w -> ELaplaceF c (f w)
+      EReturnF a -> EReturnF (f a)
+      EBindF a k -> EBindF (f a) (f k)
 
---instance HXFunctor ExprF2 where
---  hxmap f _ =
---    \case
---      EValF2 x -> EValF2 x
---      EVarF2 x -> EVarF2 x
---      ELamF2 lam -> ELamF2 lam
---      EAppF2 lam arg -> EAppF2 (f lam) (f arg)
+instance (HXCFunctor c f, HXCFunctor c g) => HXCFunctor c (f :+: g) where
+  hxcmap f g =
+    \case
+      Inl left -> Inl $ hxcmap @c f g left
+      Inr right -> Inr $ hxcmap @c f g right
 
 instance HXCFunctor Typeable ExprF where
   hxcmap f g =
@@ -133,22 +97,25 @@ instance HXCFunctor Typeable ExprF where
       EVarF x -> EVarF x
       ELamF lam -> ELamF (f . lam . g)
       EAppF lam arg -> EAppF (f lam) (f arg)
+      ELaplaceF c w -> ELaplaceF c (f w)
+      EReturnF a -> EReturnF (f a)
+      EBindF a k -> EBindF (f a) (f k)
 
 -- | The functor-like variable `f` is the interpretation domain. Examples
 -- include: `Doc` for pretty-printing, `Identity` for evaluation, etc.
-type Expr (f :: * -> *) = HFix ExprF f
+type Expr f = HFix ExprF f
 
-inject :: h (HFix h f) a -> HFix h f a
-inject = HFix
+wrap :: h (HFix h f) a -> HFix h f a
+wrap = HFix
 
 place :: f a -> HFix h f a
 place = Place
 
 lam :: (Typeable a, Typeable b) => (Expr f a -> Expr f b) -> Expr f (a -> b)
-lam t = inject (ELamF t)
+lam t = wrap (ELamF t)
 
 app :: (Typeable a, Typeable b) => Expr f (a -> b) -> Expr f a -> Expr f b
-app f t = inject (EAppF f t)
+app f t = wrap (EAppF f t)
 
 -- | Catamorphism over a functor-functor. But wait a second, can't we just
 -- instantiate `f` with some monad? I guess that's OK... If `a` is a monadic
@@ -192,9 +159,9 @@ substExprF x needle term@(EVarF y) =
   if x == y
     then case eqTypeRep (typeRep @r) (typeRep @a) of
       Just HRefl -> needle
-      Nothing -> inject term
-    else inject term
-substExprF _ _ term = inject term
+      Nothing -> wrap term
+    else wrap term
+substExprF _ _ term = wrap term
 
 substExpr :: (Typeable r, Typeable a) => String -> (Expr f) r -> (Expr (Expr f)) a -> (Expr f) a
 substExpr x needle = hccata @Typeable (substExprF x needle)
@@ -209,6 +176,12 @@ fvF (EAppF a b) = K $ do
   a' <- unK a
   b' <- unK b
   return (S.union a' b')
+fvF (ELaplaceF _ w) = K . unK $ w
+fvF (EReturnF a) = K . unK $ a
+fvF (EBindF a k) = K $ do
+  a' <- unK a
+  k' <- unK k
+  return (S.union a' k')
 
 fv :: FreshM m => (forall f. Expr f a) -> m (S.Set String)
 fv = unK . hcata fvF
@@ -221,7 +194,7 @@ example1 :: forall f. Expr f (Int -> Int)
 example1 = toDeepRepr $ \(x :: Expr f Int) -> x
 
 example2 :: Expr f Bool
-example2 = inject (EVarF "y")
+example2 = wrap (EVarF "y")
 
 example3 :: forall f. Expr f (Int -> Bool)
 example3 = toDeepRepr $ \(_ :: Expr f Int) -> (example2 @f)
