@@ -7,13 +7,12 @@ module Syntax where
 --import Lib
 --import Names
 
+import Data.Functor.Identity
 import Data.Kind
 import qualified Data.Set as S
-import Type.Reflection
-import Data.Functor.Identity
-
 import Names
 import Text.PrettyPrint.ANSI.Leijen
+import Type.Reflection
 
 newtype K a b = K a
   deriving (Show, Eq, Ord, Functor)
@@ -29,13 +28,14 @@ unK (K a) = a
 
 -- | Take the fixpoint of a functor-functor.
 data HFix (h :: (* -> *) -> * -> *) (f :: * -> *) (a :: *) where
-  HFix  :: h (HFix h f) a -> HFix h f a
+  HFix :: h (HFix h f) a -> HFix h f a
   Place :: f a -> HFix h f a
 
 -- | Inject one HXFunctor into another.
-class HInject
-  (h :: (* -> *) -> * -> *)
-  (j :: (* -> *) -> * -> *) where
+class
+  HInject
+    (h :: (* -> *) -> * -> *)
+    (j :: (* -> *) -> * -> *) where
   hinject' :: h r a -> j r a
 
 class HXFunctor (h :: (* -> *) -> * -> *) where
@@ -45,18 +45,20 @@ class HXFunctor (h :: (* -> *) -> * -> *) where
     (forall a. h f a -> h g a)
 
 -- | Takes 2 algebras and lift them to an algebra on the sum type.
-sumAlg :: (forall a. h f a -> f a)
-       -> (forall a. j f a -> f a)
-       -> (forall a. (h :+: j) f a -> f a)
-sumAlg alg1 _    (Inl a) = alg1 a
-sumAlg _    alg2 (Inr a) = alg2 a
+sumAlg ::
+  (forall a. h f a -> f a) ->
+  (forall a. j f a -> f a) ->
+  (forall a. (h :+: j) f a -> f a)
+sumAlg alg1 _ (Inl a) = alg1 a
+sumAlg _ alg2 (Inr a) = alg2 a
 
 class Syntactic (f :: * -> *) a where
   type DeepRepr a :: *
   toDeepRepr :: a -> f (DeepRepr a)
   fromDeepRepr :: f (DeepRepr a) -> a
 
-type Distr  = Identity
+type Distr = Identity
+
 type Number = Double
 
 data ExprF :: (* -> *) -> * -> * where
@@ -67,8 +69,11 @@ data ExprF :: (* -> *) -> * -> * where
 data ExprMonadF :: (* -> *) -> * -> * where
   ELaplaceF :: Number -> r Number -> ExprMonadF r (Distr Number)
   EReturnF :: Typeable a => r a -> ExprMonadF r (Distr a)
-  EBindF :: (Typeable a, Typeable b)
-    => r a -> r (a -> Distr b) -> ExprMonadF r (Distr b)
+  EBindF ::
+    (Typeable a, Typeable b) =>
+    r a ->
+    r (a -> Distr b) ->
+    ExprMonadF r (Distr b)
 
 instance (HXFunctor f, HXFunctor g) => HXFunctor (f :+: g) where
   hxmap f g =
@@ -106,7 +111,8 @@ instance HInject ExprMonadF (ExprF :+: ExprMonadF) where
 
 -- | The functor-like variable `f` is the interpretation domain. Examples
 -- include: `Doc` for pretty-printing, `Identity` for evaluation, etc.
-type Expr  f = HFix ExprF f
+type Expr f = HFix ExprF f
+
 type ExprM f = HFix (ExprF :+: ExprMonadF) f
 
 wrap :: h (HFix h f) a -> HFix h f a
@@ -140,7 +146,8 @@ hcata alg (HFix term) = alg . go $ term
 hinject ::
   forall h j f a.
   (HXFunctor h, HInject h j) =>
-  HFix h (HFix j f) a -> HFix j f a
+  HFix h (HFix j f) a ->
+  HFix j f a
 hinject = hcata (wrap . hinject')
 
 -- ##################
@@ -217,8 +224,8 @@ instance
 -- ##################
 prettyExprF ::
   FreshM m =>
-  ExprF (K (m Doc)) a
-  -> K (m Doc) a
+  ExprF (K (m Doc)) a ->
+  K (m Doc) a
 prettyExprF (EVarF x) = K $ do
   return $ text x
 prettyExprF (ELamF f) = K $ do
@@ -230,7 +237,8 @@ prettyExprF (EAppF a b) = K $ do
   b' <- unK b
   return $ parens $ a' <+> b'
 
-prettyExpr :: FreshM m =>
-  (forall f. Expr f a)
-  -> m Doc
+prettyExpr ::
+  FreshM m =>
+  (forall f. Expr f a) ->
+  m Doc
 prettyExpr = unK . hcata prettyExprF
