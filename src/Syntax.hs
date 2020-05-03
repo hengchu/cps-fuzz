@@ -32,10 +32,11 @@ data HFix (h :: (* -> *) -> * -> *) (f :: * -> *) (a :: *) where
   HFix  :: h (HFix h f) a -> HFix h f a
   Place :: f a -> HFix h f a
 
-class Inject
-  (f :: (* -> *) -> * -> *)
-  (g :: (* -> *) -> * -> *) where
-  inject' :: f r a -> g r a
+-- | Inject one HXFunctor into another.
+class HInject
+  (h :: (* -> *) -> * -> *)
+  (j :: (* -> *) -> * -> *) where
+  hinject' :: h r a -> j r a
 
 class HXFunctor (h :: (* -> *) -> * -> *) where
   hxmap ::
@@ -43,14 +44,12 @@ class HXFunctor (h :: (* -> *) -> * -> *) where
     (forall a. g a -> f a) ->
     (forall a. h f a -> h g a)
 
--- | A variant of `HXFunctor` that allows mapping over constrained data. This
--- assumes the constraint `c` can be satisfied by pattern matching on the
--- constructors of h.
-class HXCFunctor (c :: * -> Constraint) (h :: (* -> *) -> * -> *) where
-  hxcmap ::
-    (forall a. c a => f a -> g a) ->
-    (forall a. c a => g a -> f a) ->
-    (forall a. h f a -> h g a)
+-- | Takes 2 algebras and lift them to an algebra on the sum type.
+sumAlg :: (forall a. h f a -> f a)
+       -> (forall a. j f a -> f a)
+       -> (forall a. (h :+: j) f a -> f a)
+sumAlg alg1 _    (Inl a) = alg1 a
+sumAlg _    alg2 (Inr a) = alg2 a
 
 class Syntactic (f :: * -> *) a where
   type DeepRepr a :: *
@@ -65,9 +64,11 @@ data ExprF :: (* -> *) -> * -> * where
   ELamF :: (Typeable a, Typeable b) => (r a -> r b) -> ExprF r (a -> b)
   EAppF :: (Typeable a, Typeable b) => r (a -> b) -> r a -> ExprF r b
 
-  ELaplaceF :: Number -> r Number -> ExprF r (Distr Number)
-  EReturnF  :: Typeable a => r a -> ExprF r (Distr a)
-  EBindF    :: (Typeable a, Typeable b) => r a -> r (a -> Distr b) -> ExprF r (Distr b)
+data ExprMonadF :: (* -> *) -> * -> * where
+  ELaplaceF :: Number -> r Number -> ExprMonadF r (Distr Number)
+  EReturnF :: Typeable a => r a -> ExprMonadF r (Distr a)
+  EBindF :: (Typeable a, Typeable b)
+    => r a -> r (a -> Distr b) -> ExprMonadF r (Distr b)
 
 instance (HXFunctor f, HXFunctor g) => HXFunctor (f :+: g) where
   hxmap f g =
@@ -81,29 +82,32 @@ instance HXFunctor ExprF where
       EVarF x -> EVarF x
       ELamF lam -> ELamF $ (f . lam . g)
       EAppF lam arg -> EAppF (f lam) (f arg)
+
+instance HXFunctor ExprMonadF where
+  hxmap f _ =
+    \case
       ELaplaceF c w -> ELaplaceF c (f w)
       EReturnF a -> EReturnF (f a)
       EBindF a k -> EBindF (f a) (f k)
 
-instance (HXCFunctor c f, HXCFunctor c g) => HXCFunctor c (f :+: g) where
-  hxcmap f g =
+instance HInject ExprF (ExprF :+: ExprMonadF) where
+  hinject' =
     \case
-      Inl left -> Inl $ hxcmap @c f g left
-      Inr right -> Inr $ hxcmap @c f g right
+      EVarF x -> Inl (EVarF x)
+      ELamF f -> Inl (ELamF f)
+      EAppF a b -> Inl (EAppF a b)
 
-instance HXCFunctor Typeable ExprF where
-  hxcmap f g =
+instance HInject ExprMonadF (ExprF :+: ExprMonadF) where
+  hinject' =
     \case
-      EVarF x -> EVarF x
-      ELamF lam -> ELamF (f . lam . g)
-      EAppF lam arg -> EAppF (f lam) (f arg)
-      ELaplaceF c w -> ELaplaceF c (f w)
-      EReturnF a -> EReturnF (f a)
-      EBindF a k -> EBindF (f a) (f k)
+      ELaplaceF c w -> Inr (ELaplaceF c w)
+      EReturnF a -> Inr (EReturnF a)
+      EBindF a b -> Inr (EBindF a b)
 
 -- | The functor-like variable `f` is the interpretation domain. Examples
 -- include: `Doc` for pretty-printing, `Identity` for evaluation, etc.
-type Expr f = HFix ExprF f
+type Expr  f = HFix ExprF f
+type ExprM f = HFix (ExprF :+: ExprMonadF) f
 
 wrap :: h (HFix h f) a -> HFix h f a
 wrap = HFix
@@ -132,17 +136,12 @@ hcata alg (HFix term) = alg . go $ term
   where
     go = hxmap (hcata alg) place
 
-hccata ::
-  forall c h f.
-  HXCFunctor c h =>
-  (forall a. c a => h f a -> f a) ->
-  (forall a. c a => HFix h f a -> f a)
-hccata alg =
-  \case
-    Place term -> term
-    HFix term -> alg . go $ term
-  where
-    go = hxcmap @c (hccata @c alg) place
+-- | Lifting functor-functors through injection.
+hinject ::
+  forall h j f a.
+  (HXFunctor h, HInject h j) =>
+  HFix h (HFix j f) a -> HFix j f a
+hinject = hcata (wrap . hinject')
 
 -- ##################
 -- # LANGUAGE TOOLS #
@@ -150,7 +149,7 @@ hccata alg =
 
 substExprF ::
   forall r f a.
-  (Typeable r, Typeable a) =>
+  Typeable r =>
   String ->
   (Expr f) r ->
   ExprF (Expr f) a ->
@@ -163,8 +162,8 @@ substExprF x needle term@(EVarF y) =
     else wrap term
 substExprF _ _ term = wrap term
 
-substExpr :: (Typeable r, Typeable a) => String -> (Expr f) r -> (Expr (Expr f)) a -> (Expr f) a
-substExpr x needle = hccata @Typeable (substExprF x needle)
+substExpr :: Typeable r => String -> (Expr f) r -> (Expr (Expr f)) a -> (Expr f) a
+substExpr x needle = hcata (substExprF x needle)
 
 fvF :: FreshM m => ExprF (K (m (S.Set String))) a -> K (m (S.Set String)) a
 fvF (EVarF x) = K . return $ S.singleton x
@@ -176,15 +175,9 @@ fvF (EAppF a b) = K $ do
   a' <- unK a
   b' <- unK b
   return (S.union a' b')
-fvF (ELaplaceF _ w) = K . unK $ w
-fvF (EReturnF a) = K . unK $ a
-fvF (EBindF a k) = K $ do
-  a' <- unK a
-  k' <- unK k
-  return (S.union a' k')
 
-fv :: FreshM m => (forall f. Expr f a) -> m (S.Set String)
-fv = unK . hcata fvF
+fv :: FreshM m => (forall f. ExprM f a) -> m (S.Set String)
+fv = unK . hcata (fvF `sumAlg` const (K (return S.empty)))
 
 -- ############
 -- # EXAMPLES #
@@ -193,7 +186,7 @@ fv = unK . hcata fvF
 example1 :: forall f. Expr f (Int -> Int)
 example1 = toDeepRepr $ \(x :: Expr f Int) -> x
 
-example2 :: Expr f Bool
+example2 :: forall f. Expr f Bool
 example2 = wrap (EVarF "y")
 
 example3 :: forall f. Expr f (Int -> Bool)
