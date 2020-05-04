@@ -13,11 +13,21 @@ import qualified Data.Set as S
 import Names
 import Text.PrettyPrint.ANSI.Leijen
 import Type.Reflection
+import Data.Functor
+import Data.Functor.Compose
+import Data.Fix
 
 newtype K a b = K a
   deriving (Show, Eq, Ord, Functor)
 
+
 infixl 6 :+:
+infixr 9 :.:
+
+type h :.: j = HComp h j
+
+newtype HComp h j r a where
+  HComp :: h (j r) a -> HComp h j r a
 
 data (f :: (* -> *) -> * -> *) :+: (g :: (* -> *) -> * -> *) :: (* -> *) -> * -> * where
   Inl :: f r a -> (f :+: g) r a
@@ -26,9 +36,13 @@ data (f :: (* -> *) -> * -> *) :+: (g :: (* -> *) -> * -> *) :: (* -> *) -> * ->
 unK :: K a b -> a
 unK (K a) = a
 
+data HMaybe f a where
+  HJust    :: f a -> HMaybe f a
+  HNothing :: HMaybe f a
+
 -- | Take the fixpoint of a functor-functor.
 data HFix (h :: (* -> *) -> * -> *) (f :: * -> *) (a :: *) where
-  HFix :: h (HFix h f) a -> HFix h f a
+  HFix  :: h (HFix h f) a -> HFix h f a
   Place :: f a -> HFix h f a
 
 -- | Inject one HXFunctor into another.
@@ -36,7 +50,8 @@ class
   HInject
     (h :: (* -> *) -> * -> *)
     (j :: (* -> *) -> * -> *) where
-  hinject' :: h r a -> j r a
+  hinject'  :: h r a -> j r a
+  hproject' :: j r a -> (HMaybe :.: h) r a
 
 class HXFunctor (h :: (* -> *) -> * -> *) where
   hxmap ::
@@ -74,6 +89,17 @@ data ExprMonadF :: (* -> *) -> * -> * where
     r a ->
     r (a -> Distr b) ->
     ExprMonadF r (Distr b)
+
+instance HXFunctor HMaybe where
+  hxmap f _ =
+    \case
+      HJust a -> HJust (f a)
+      HNothing -> HNothing
+
+instance (HXFunctor f, HXFunctor g) => HXFunctor (f :.: g) where
+  hxmap f g =
+    \case
+      HComp a -> HComp (hxmap (hxmap f g) (hxmap g f) a)
 
 instance (HXFunctor f, HXFunctor g) => HXFunctor (f :+: g) where
   hxmap f g =
@@ -146,9 +172,23 @@ hcata alg (HFix term) = alg . go $ term
 hinject ::
   forall h j f a.
   (HXFunctor h, HInject h j) =>
-  HFix h (HFix j f) a ->
+  (forall f. HFix h f a) ->
   HFix j f a
 hinject = hcata (wrap . hinject')
+
+hproject ::
+  forall h j f a.
+  (HXFunctor j, HInject h j) =>
+  (forall f. HFix j f a) ->
+  HFix (HMaybe :.: h) f a
+hproject = hcata (wrap . hproject')
+
+unwrap :: (HMaybe :.: h) (Compose Maybe (HFix h f)) a -> Maybe (h (Compose Maybe (HFix h f)) a)
+unwrap (HComp (HJust a)) = Just a
+unwrap (HComp HNothing) = Nothing
+
+isJustAlg :: h (Compose Maybe (HFix h f)) a -> Compose Maybe (HFix h f) a
+isJustAlg = undefined
 
 -- ##################
 -- # LANGUAGE TOOLS #
