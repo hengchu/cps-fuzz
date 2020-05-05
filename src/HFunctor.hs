@@ -3,7 +3,8 @@ module HFunctor where
 newtype K a b = K a
   deriving (Show, Eq, Ord, Functor)
 
-newtype DeriveHXFunctor    h     f a = DeriveHXFunctor    (h f a)
+newtype DeriveHXFunctor h f a = DeriveHXFunctor (h f a)
+
 newtype DeriveHInjectTrans h j l r a = DeriveHInjectTrans (h r a)
 
 -- | This is right-associative so we can pattern match on the first type
@@ -95,7 +96,7 @@ sumAlgConst ::
   (forall a. f a) ->
   (forall a. j f a -> f a)
 sumAlgConst alg _ (hproject' -> Just term) = alg term
-sumAlgConst _   c _                        = c
+sumAlgConst _ c _ = c
 
 -- | Lift an algebra through fully polymorphic injection.
 sumAlgMonoid ::
@@ -103,7 +104,7 @@ sumAlgMonoid ::
   (forall a. h f a -> f a) ->
   (forall a. j f a -> f a)
 sumAlgMonoid alg (hproject' -> Just term) = alg term
-sumAlgMonoid _   _                        = mempty
+sumAlgMonoid _ _ = mempty
 
 xwrap :: h (HXFix h f) a -> HXFix h f a
 xwrap = HXFix
@@ -139,7 +140,7 @@ hcata ::
   HFunctor h =>
   (forall a. h f a -> f a) ->
   (forall a. HXFix h f a -> f a)
-hcata _   (Place term) = term
+hcata _ (Place term) = term
 hcata alg (HXFix term) = alg . go $ term
   where
     go = hmap (hcata alg)
@@ -157,7 +158,7 @@ hcataM ::
   (HTraversable h, Monad m) =>
   (forall a. h f a -> m (f a)) ->
   (forall a. HXFix h f a -> m (f a))
-hcataM _    (Place term) = pure term
+hcataM _ (Place term) = pure term
 hcataM algM (HXFix term) = (algM =<<) . htraverse (hcataM algM) $ term
 
 hcataM' ::
@@ -184,23 +185,23 @@ inject' = hcata' (wrap . hinject')
 
 hproject ::
   forall h j a.
-  (HFunctor j,
-   HTraversable h,
-   HInject h j) =>
+  ( HFunctor j,
+    HTraversable h,
+    HInject h j
+  ) =>
   HFix j a ->
   Maybe (HFix h a)
 hproject =
   hcataM' (fmap wrap . unMaybeHomM)
-  . hcata' (wrap . prj . hproject')
+    . hcata' (wrap . prj . hproject')
   where
     prj :: forall h r a. Maybe (h r a) -> (HMaybe :.: h) r a
     prj (Just a) = HComp (HJust a)
-    prj Nothing  = HComp HNothing
+    prj Nothing = HComp HNothing
 
 unMaybeHomM :: (HMaybe :.: h) f a -> Maybe (h f a)
 unMaybeHomM (HComp (HJust a)) = Just a
-unMaybeHomM (HComp HNothing)  = Nothing
-
+unMaybeHomM (HComp HNothing) = Nothing
 
 -- ##########################################
 -- # General higher-order functor instances #
