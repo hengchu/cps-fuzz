@@ -7,7 +7,6 @@ module Syntax where
 import Control.Lens
 import Control.Monad.Catch
 import Control.Monad.State.Strict
-import Data.Proxy
 import qualified Data.Set as S
 import GHC.TypeLits
 import HFunctor
@@ -15,6 +14,8 @@ import qualified Language.Haskell.TH as TH
 import Names
 import Text.PrettyPrint.ANSI.Leijen hiding ((<$>))
 import Type.Reflection
+import GHC.Stack
+import Data.Proxy
 
 -- | Carries a statically determined name hint for the wrapped value.
 newtype Name :: Symbol -> * -> * where
@@ -80,7 +81,7 @@ data XExprMonadF :: (* -> *) -> * -> * where
 data ExprMonadF :: (* -> *) -> * -> * where
   ELaplaceF :: Number -> r Number -> ExprMonadF r (Distr Number)
   EReturnF :: Typeable a => r a -> ExprMonadF r (Distr a)
-  EBindF :: (Typeable a, Typeable b) => r a -> Var a -> r (Distr b) -> ExprMonadF r (Distr b)
+  EBindF :: (Typeable a, Typeable b) => r (Distr a) -> Var a -> r (Distr b) -> ExprMonadF r (Distr b)
   deriving HXFunctor via (DeriveHXFunctor ExprMonadF)
 
 -- | Primitives supported by the language.
@@ -350,6 +351,12 @@ instance SynMonad (CPSFuzz f) Distr where
   m >>=. f = xwrap . hinject' $ XEBindF m f
   ret = xwrap . hinject' . XEReturnF
 
+var ::
+  Typeable a =>
+  String ->
+  CPSFuzz f a
+var = xwrap . hinject' . XEVarF
+
 lam ::
   (KnownSymbol s, Typeable a, Typeable b) =>
   (Name s (CPSFuzz f a) -> CPSFuzz f b) ->
@@ -463,7 +470,64 @@ data TypeCheckError
       }
   deriving (Show, Eq, Ord)
 
+data ExpectArrowTypeError =
+  ExpectArrowTypeError { _eatObserved :: SomeTypeRep }
+  deriving (Show, Eq, Ord)
+
+data ExpectBagTypeError =
+  ExpectBagTypeError { _ebtObserved :: SomeTypeRep }
+  deriving (Show, Eq, Ord)
+
 instance Exception TypeCheckError
+instance Exception ExpectArrowTypeError
+instance Exception ExpectBagTypeError
+
+type MonadThrowWithStack m = (MonadThrow m, HasCallStack)
+
+data WithCallStack exc = WithCallStack CallStack exc
+  deriving (Show)
+
+instance Exception exc => Exception (WithCallStack exc)
+
+throwM' :: (MonadThrowWithStack m, Exception e) => e -> m a
+throwM' = throwM . WithCallStack callStack
+
+withArrowType :: forall unknown r m.
+  (MonadThrowWithStack m, Typeable unknown) =>
+  (forall a b. (unknown ~ (a -> b), Typeable a, Typeable b) => Proxy (a -> b) -> m r) -> m r
+withArrowType k =
+  case trUnknown of
+    App someArrow (b :: TypeRep b) -> case someArrow of
+      App arrow (a :: TypeRep a) -> case eqTypeRep arrow (typeRep @(->)) of
+        Just HRefl -> case eqTypeRep trUnknown (typeRep @(a -> b)) of
+          Just HRefl -> withTypeable a $ withTypeable b $ k Proxy
+          _ -> throwM' $ TypeCheckError (SomeTypeRep $ typeRep @(a -> b)) (SomeTypeRep trUnknown)
+        _ -> throwM' . ExpectArrowTypeError $ (SomeTypeRep trUnknown)
+      _ -> throwM' . ExpectArrowTypeError $ (SomeTypeRep trUnknown)
+    _ -> throwM' . ExpectArrowTypeError $ (SomeTypeRep trUnknown)
+  where trUnknown = typeRep @unknown
+
+withBagType :: forall unknown r m.
+  (MonadThrowWithStack m, Typeable unknown) =>
+  (forall a. (unknown ~ Bag a, Typeable a) => Proxy (Bag a) -> m r) -> m r
+withBagType k =
+  case trUnknown of
+    App someTyCon (a :: TypeRep a) ->
+      case eqTypeRep someTyCon (typeRep @Bag) of
+        Just HRefl -> case eqTypeRep trUnknown (typeRep @(Bag a)) of
+          Just HRefl -> withTypeable a (k Proxy)
+          _ -> throwM' . ExpectBagTypeError $ (SomeTypeRep trUnknown)
+        _ -> throwM' . ExpectBagTypeError $ (SomeTypeRep trUnknown)
+    _ -> throwM' . ExpectBagTypeError $ (SomeTypeRep trUnknown)
+  where trUnknown = typeRep @unknown
+
+withHRefl :: forall a b m r.
+  (Typeable a, Typeable b, MonadThrowWithStack m) =>
+  ((a :~~: b) -> m r) -> m r
+withHRefl k =
+  case eqTypeRep (typeRep @a) (typeRep @b) of
+    Just HRefl -> k HRefl
+    Nothing -> throwM' $ TypeCheckError (SomeTypeRep (typeRep @a)) (SomeTypeRep (typeRep @b))
 
 fvBagOpF :: BagOpF (K (S.Set String)) a
          -> K (S.Set String) a
@@ -476,6 +540,31 @@ fvBagOpFM :: FreshM m =>
 fvBagOpFM (BMapF (unK -> f) (unK -> db) (unK -> kont)) = K $ S.union <$> f <*> (S.union <$> db <*> kont)
 fvBagOpFM (BSumF _ (unK -> db) (unK -> kont)) = K $ S.union <$> db <*> kont
 
+namedBagOpFM :: (MonadThrowWithStack m, FreshM m) =>
+  BagOpF (K (m AnyNCPSFuzz)) a ->
+  K (m AnyNCPSFuzz) a
+namedBagOpFM (BMapF ((unK -> f) :: _ (a -> b)) ((unK -> db) :: _ (Bag a)) ((unK -> kont) :: _ (Bag b -> t))) = K $ do
+  f'    <- f
+  db'   <- db
+  kont' <- kont
+  case (f', db', kont') of
+    (AnyNCPSFuzz (f' :: _ (a_arrow_b)),
+     AnyNCPSFuzz (db' :: _ baga),
+     AnyNCPSFuzz (kont' :: _ (bagb_arrow_t))) ->
+      withHRefl @(a -> b) @a_arrow_b $ \HRefl ->
+      withHRefl @(Bag a) @baga $ \HRefl ->
+      withHRefl @(Bag b -> t) @bagb_arrow_t $ \HRefl ->
+      return . AnyNCPSFuzz . wrap . hinject' $ BMapF f' db' kont'
+namedBagOpFM (BSumF clip ((unK -> db) :: _ (Bag Number)) ((unK -> kont) :: _ (Number -> t))) = K $ do
+  db' <- db
+  kont' <- kont
+  case (db', kont') of
+    (AnyNCPSFuzz (db' :: _ bagnum),
+     AnyNCPSFuzz (kont' :: _ num_arrow_t)) ->
+      withHRefl @(Bag Number) @bagnum $ \HRefl ->
+      withHRefl @(Number -> t) @num_arrow_t $ \HRefl ->
+      return . AnyNCPSFuzz . wrap . hinject' $ BSumF clip db' kont'
+
 fvXExprMonadF ::
   FreshM m =>
   XExprMonadF (K (m (S.Set String))) a ->
@@ -487,6 +576,30 @@ fvXExprMonadF (XEBindF (unK -> m) f) = K $ do
   x <- gfresh "x"
   f' <- unK $ f (N . K . return . S.singleton $ x)
   return $ S.union m' (S.delete x f')
+
+namedXExprMonadFM :: (MonadThrowWithStack m, FreshM m) =>
+  XExprMonadF (K (m AnyNCPSFuzz)) a ->
+  K (m AnyNCPSFuzz) a
+namedXExprMonadFM (XEReturnF (unK -> a)) = K $ do
+  AnyNCPSFuzz a' <- a
+  return . AnyNCPSFuzz . wrap . hinject' $ EReturnF a'
+namedXExprMonadFM (XEBindF ((unK -> m) :: _ (Distr a)) (lam :: Name s _ -> _ (Distr b))) = K $ do
+  m' <- m
+  x <- gfresh (symbolVal (Proxy :: _ s))
+  let var = Var @a x
+  f' <- unK $ lam (N . K . return . AnyNCPSFuzz . wrap . hinject' $ EVarF var)
+  case (m', f') of
+    (AnyNCPSFuzz (m' :: _ distr_a),
+     AnyNCPSFuzz (f' :: _ distr_b)) ->
+      withHRefl @(Distr a) @distr_a $ \HRefl ->
+      withHRefl @(Distr b) @distr_b $ \HRefl ->
+      return . AnyNCPSFuzz . wrap . hinject' $ EBindF m' var f'
+namedXExprMonadFM (XELaplaceF w ((unK -> c) :: _ Number)) = K $ do
+  c' <- c
+  case c' of
+    AnyNCPSFuzz (c' :: _ num) ->
+      withHRefl @Number @num $ \HRefl ->
+      return . AnyNCPSFuzz . wrap . hinject' $ ELaplaceF w c'
 
 fvXExprF ::
   FreshM m =>
@@ -643,7 +756,17 @@ instance HInject XExprMonadF (a :+: XExprMonadF :+: h) where
   hproject' (Inr (Inl a)) = Just a
   hproject' _ = Nothing
 
+instance HInject ExprMonadF (a :+: ExprMonadF :+: h) where
+  hinject' = Inr . Inl
+  hproject' (Inr (Inl a)) = Just a
+  hproject' _ = Nothing
+
 instance HInject XExprF (a :+: b :+: XExprF :+: h) where
+  hinject' = Inr . Inr . Inl
+  hproject' (Inr (Inr (Inl a))) = Just a
+  hproject' _ = Nothing
+
+instance HInject ExprF (a :+: b :+: ExprF :+: h) where
   hinject' = Inr . Inr . Inl
   hproject' (Inr (Inr (Inl a))) = Just a
   hproject' _ = Nothing
