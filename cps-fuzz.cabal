@@ -36,9 +36,8 @@ library
                -Wno-partial-type-signatures
                -- -Werror
   exposed-modules:
-                  Lib
-                , Compiler
-                , Pretty
+                  Pretty
+                , HFunctor
                 , Names
                 , Syntax
                 , Examples

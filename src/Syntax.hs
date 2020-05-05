@@ -14,23 +14,7 @@ import Text.PrettyPrint.ANSI.Leijen hiding ((<$>))
 import Type.Reflection
 import Control.Monad.State.Strict
 import qualified Language.Haskell.TH as TH
-
-newtype K a b = K a
-  deriving (Show, Eq, Ord, Functor)
-
-newtype DeriveHXFunctor    h     f a = DeriveHXFunctor    (h f a)
-newtype DeriveHInjectTrans h j l r a = DeriveHInjectTrans (h r a)
-
--- | This is right-associative so we can pattern match on the first type
--- parameter in typeclass instances.
-infixr 6 :+:
-
-infixr 9 :.:
-
-type h :.: j = HComp h j
-
-newtype HComp h j r a where
-  HComp :: h (j r) a -> HComp h j r a
+import HFunctor
 
 -- | Carries a statically determined name hint for the wrapped value.
 newtype Name :: Symbol -> * -> * where
@@ -41,95 +25,6 @@ withName = N
 
 unName :: Name s r -> r
 unName (N r) = r
-
-data
-  (f :: (* -> *) -> * -> *)
-    :+: (g :: (* -> *) -> * -> *) :: (* -> *) -> * -> * where
-  Inl :: f r a -> (f :+: g) r a
-  Inr :: g r a -> (f :+: g) r a
-
-unK :: K a b -> a
-unK (K a) = a
-
-instance Semigroup m => Semigroup (K m a) where
-  (K a) <> (K b) = K (a <> b)
-
-instance Monoid m => Monoid (K m a) where
-  mempty = K mempty
-
-data HMaybe f a where
-  HJust :: f a -> HMaybe f a
-  HNothing :: HMaybe f a
-  deriving (HXFunctor) via (DeriveHXFunctor HMaybe)
-
--- | Take the fixpoint of a functor-functor.
-data HXFix (h :: (* -> *) -> * -> *) (f :: * -> *) (a :: *) where
-  HXFix :: h (HXFix h f) a -> HXFix h f a
-  Place :: f a -> HXFix h f a
-
-data HFix (h :: (* -> *) -> * -> *) (a :: *) where
-  HFix :: h (HFix h) a -> HFix h a
-
--- | Inject one HXFunctor into another.
-class
-  HInject
-    (h :: (* -> *) -> * -> *)
-    (j :: (* -> *) -> * -> *) where
-  hinject' :: h r a -> j r a
-  hproject' :: j r a -> Maybe (h r a)
-
-class HFunctor (h :: (* -> *) -> * -> *) where
-  hmap ::
-    (forall a. f a -> g a) ->
-    (forall a. h f a -> h g a)
-
-class HFunctor h => HFoldable h where
-  hfoldMap ::
-    Monoid m =>
-    (forall a. f a -> m) ->
-    (forall a. h f a -> m)
-
-class HFoldable h => HTraversable h where
-  htraverse ::
-    Applicative m =>
-    (forall a. f a -> m (g a)) ->
-    (forall a. h f a -> m (h g a))
-
-class HXFunctor (h :: (* -> *) -> * -> *) where
-  hxmap ::
-    (forall a. f a -> g a) ->
-    (forall a. g a -> f a) ->
-    (forall a. h f a -> h g a)
-
--- morally true, but overlaps with other instances
-instance HFunctor h => HXFunctor (DeriveHXFunctor h) where
-  hxmap f _ (DeriveHXFunctor term) = DeriveHXFunctor $ hmap f term
-
-infixr 6 `sumAlg`
-
--- | Takes 2 algebras and lift them to an algebra on the sum type.
-sumAlg ::
-  (forall a. h f a -> f a) ->
-  (forall a. j f a -> f a) ->
-  (forall a. (h :+: j) f a -> f a)
-sumAlg alg1 _ (Inl a) = alg1 a
-sumAlg _ alg2 (Inr a) = alg2 a
-
-sumAlgConst ::
-  HInject h j =>
-  (forall a. h f a -> f a) ->
-  (forall a. f a) ->
-  (forall a. j f a -> f a)
-sumAlgConst alg _ (hproject' -> Just term) = alg term
-sumAlgConst alg c _                        = c
-
--- | Lift an algebra through fully polymorphic injection.
-sumAlgMonoid ::
-  (forall a. Monoid (f a), HInject h j) =>
-  (forall a. h f a -> f a) ->
-  (forall a. j f a -> f a)
-sumAlgMonoid alg (hproject' -> Just term) = alg term
-sumAlgMonoid _   _                        = mempty
 
 class Syntactic (f :: * -> *) a where
   type DeepRepr a :: *
@@ -194,9 +89,18 @@ data PrimF :: (* -> *) -> * -> * where
   PSubF  :: (Num a, Typeable a)  => r a -> r a -> PrimF r a
   PMultF :: (Num a, Typeable a)  => r a -> r a -> PrimF r a
   PDivF  :: (Fractional a, Typeable a) => r a -> r a -> PrimF r a
+  PAbsF  :: (Num a, Typeable a) => r a -> PrimF r a
+  PSignumF :: (Num a, Typeable a) => r a -> PrimF r a
   PExpF  :: (Floating a, Typeable a) => r a -> PrimF r a
   PSqrtF :: (Floating a, Typeable a) => r a -> PrimF r a
   PLogF  :: (Floating a, Typeable a) => r a -> PrimF r a
+
+  PGTF  :: (Typeable a, Ord a) => r a -> r a -> PrimF r Bool
+  PGEF  :: (Typeable a, Ord a) => r a -> r a -> PrimF r Bool
+  PLTF  :: (Typeable a, Ord a) => r a -> r a -> PrimF r Bool
+  PLEF  :: (Typeable a, Ord a) => r a -> r a -> PrimF r Bool
+  PEQF  :: (Typeable a, Ord a) => r a -> r a -> PrimF r Bool
+  PNEQF :: (Typeable a, Ord a) => r a -> r a -> PrimF r Bool
 
   -- Data structures.
   PJustF     :: Typeable a => r a -> PrimF r (Maybe a)
@@ -210,8 +114,10 @@ data PrimF :: (* -> *) -> * -> * where
 
 -- | Bag operations.
 data BagOpF :: (* -> *) -> * -> * where
-  BMapF :: r (Bag a) -> r (a -> b) -> BagOpF r (Bag b)
-  --BSumF ::
+  BMapF :: (Typeable a, Typeable b, Typeable t)
+    => r (a -> b) -> r (Bag a)      -> r (Bag b  -> t) -> BagOpF r t
+  BSumF :: Typeable t
+    => Vec Number -> r (Bag Number) -> r (Number -> t) -> BagOpF r t
 
 -- | Control flow of the language.
 data ControlF :: (* -> *) -> * -> * where
@@ -257,14 +163,37 @@ instance HXFunctor XExprMonadF where
 type CPSFuzzF   = BagOpF :+: XExprMonadF :+: XExprF :+: ControlF :+: PrimF
 type CPSFuzz  f = HXFix CPSFuzzF f
 
-xwrap :: h (HXFix h f) a -> HXFix h f a
-xwrap = HXFix
+-- ###############################
+-- # LANGUAGE SMART CONSTRUCTORS #
+-- ###############################
 
-wrap :: h (HFix h) a -> HFix h a
-wrap = HFix
+class SynOrd (f :: * -> *) where
+  infix 4 %<, %<=, %>, %>=, %==, %/=
 
-xplace :: f a -> HXFix h f a
-xplace = Place
+  (%<)  :: (Typeable a, Ord a) => f a -> f a -> f Bool
+  (%<=) :: (Typeable a, Ord a) => f a -> f a -> f Bool
+  (%>)  :: (Typeable a, Ord a) => f a -> f a -> f Bool
+  (%>=) :: (Typeable a, Ord a) => f a -> f a -> f Bool
+  (%==) :: (Typeable a, Ord a) => f a -> f a -> f Bool
+  (%/=) :: (Typeable a, Ord a) => f a -> f a -> f Bool
+
+class SynMonad h (m :: * -> *) where
+  infixl 1 >>=.
+  (>>=.) :: (KnownSymbol s, Typeable a, Typeable b)
+    => h (m a) -> (Name s (h a) -> h (m b)) -> h (m b)
+  ret :: Typeable a => h a -> h (m a)
+
+instance SynOrd (CPSFuzz f) where
+  a %< b  = xwrap . hinject' $ PLTF a b
+  a %<= b = xwrap . hinject' $ PLEF a b
+  a %> b  = xwrap . hinject' $ PGTF a b
+  a %>= b = xwrap . hinject' $ PGEF a b
+  a %== b = xwrap . hinject' $ PEQF a b
+  a %/= b = xwrap . hinject' $ PNEQF a b
+
+instance SynMonad (CPSFuzz f) Distr where
+  m >>=. f = xwrap . hinject' $ XEBindF m f
+  ret = xwrap . hinject' . XEReturnF
 
 lam :: (KnownSymbol s, Typeable a, Typeable b)
   => (Name s (CPSFuzz f a) -> CPSFuzz f b) -> CPSFuzz f (a -> b)
@@ -273,110 +202,77 @@ lam = xwrap . hinject' @XExprF @CPSFuzzF . XELamF
 app :: (Typeable a, Typeable b) => CPSFuzz f (a -> b) -> CPSFuzz f a -> CPSFuzz f b
 app f t = xwrap . hinject' @XExprF @CPSFuzzF $ XEAppF f t
 
+share :: (Typeable a, Typeable b) => CPSFuzz f a -> CPSFuzz f (a -> b) -> CPSFuzz f b
+share = flip app
+
 lap :: Number -> CPSFuzz f Number -> CPSFuzz f (Distr Number)
 lap w c = xwrap . hinject' $ XELaplaceF w c
 
--- | Relax a fixpoint into a fixpoint potentially with holes in it. This allows
--- us to fold over the structure with catamorphism.
-relax :: HFunctor h => HFix h a -> HXFix h f a
-relax (HFix term) = HXFix . (hmap relax) $ term
+if_ :: Typeable a => CPSFuzz f Bool -> CPSFuzz f a -> CPSFuzz f a -> CPSFuzz f a
+if_ cond t f = xwrap . hinject' $ CIfF cond (toDeepRepr t) (toDeepRepr f)
 
--- | Catamorphism over a functor-functor. But wait a second, can't we just
--- instantiate `f` with some monad? I guess that's OK... If `a` is a monadic
--- type, then we just have layers of uncomposed monads. The result will not be a
--- monad transformer stack, as the binds of `f` do not propagate into `a`, but
--- that's OK maybe?
-hxcata ::
-  forall h f.
-  HXFunctor h =>
-  (forall a. h f a -> f a) ->
-  (forall a. HXFix h f a -> f a)
-hxcata _ (Place term) = term
-hxcata alg (HXFix term) = alg . go $ term
-  where
-    go = hxmap (hxcata alg) xplace
+just :: Typeable a => CPSFuzz f a -> CPSFuzz f (Maybe a)
+just = xwrap . hinject' . PJustF
 
-hcata ::
-  forall h f.
-  HFunctor h =>
-  (forall a. h f a -> f a) ->
-  (forall a. HXFix h f a -> f a)
-hcata _   (Place term) = term
-hcata alg (HXFix term) = alg . go $ term
-  where
-    go = hmap (hcata alg)
+nothing :: Typeable a => CPSFuzz f (Maybe a)
+nothing = xwrap . hinject' $ PNothingF
 
-hcata' ::
-  forall h f.
-  HFunctor h =>
-  (forall a. h f a -> f a) ->
-  (forall a. HFix h a -> f a)
-hcata' alg (HFix term) =
-  alg . hmap (hcata' alg) $ term
+isJust :: Typeable a => CPSFuzz f (Maybe a) -> CPSFuzz f Bool
+isJust = xwrap . hinject' . PIsJustF
 
-hcataM ::
-  forall h f m.
-  (HTraversable h, Monad m) =>
-  (forall a. h f a -> m (f a)) ->
-  (forall a. HXFix h f a -> m (f a))
-hcataM _    (Place term) = pure term
-hcataM algM (HXFix term) = (algM =<<) . htraverse (hcataM algM) $ term
+fromJust :: Typeable a => CPSFuzz f (Maybe a) -> CPSFuzz f a
+fromJust = xwrap . hinject' . PFromJustF
 
-hcataM' ::
-  forall h f m.
-  (HTraversable h, Monad m) =>
-  (forall a. h f a -> m (f a)) ->
-  (forall a. HFix h a -> m (f a))
-hcataM' algM (HFix term) = (algM =<<) . htraverse (hcataM' algM) $ term
+bmap ::
+  (KnownSymbol row, KnownSymbol db,
+   Typeable a, Typeable b, Typeable t)
+  => (Name row (CPSFuzz f a) -> CPSFuzz f b)
+  -> CPSFuzz f (Bag a)
+  -> (Name db  (CPSFuzz f (Bag b)) -> CPSFuzz f t)
+  -> CPSFuzz f t
+bmap f input kont =
+  xwrap . hinject' $ BMapF (toDeepRepr f) input (toDeepRepr kont)
 
--- | Lifting functor-functors through injection.
-inject ::
-  forall h j f a.
-  (HXFunctor h, HInject h j) =>
-  (HXFix h (HXFix j f) a) ->
-  HXFix j f a
-inject = hxcata (xwrap . hinject')
+bmapNothing ::
+  (KnownSymbol db, Typeable a, Typeable t) =>
+  CPSFuzz f a ->
+  CPSFuzz f (Bag (Maybe a)) ->
+  (Name db (CPSFuzz f (Bag a)) -> CPSFuzz f t) ->
+  CPSFuzz f t
+bmapNothing def input kont =
+  bmap (\(N row :: Name "maybeRow" _) -> if_ (isJust row) (fromJust row) def) input kont
 
-inject' ::
-  forall h j a.
-  (HFunctor h, HInject h j) =>
-  HFix h a ->
-  HFix j a
-inject' = hcata' (wrap . hinject')
+bfilter :: forall row db a t f.
+  (KnownSymbol row, KnownSymbol db,
+   Typeable a, Typeable t)
+  => (Name row (CPSFuzz f a) -> CPSFuzz f Bool)
+  -> CPSFuzz f (Bag a)
+  -> (Name db (CPSFuzz f (Bag (Maybe a))) -> CPSFuzz f t)
+  -> CPSFuzz f t
+bfilter pred input kont =
+  bmap (\row -> if_ (pred row) (just (unName row)) nothing) input kont
 
-hproject ::
-  forall h j a.
-  (HFunctor j,
-   HTraversable h,
-   HInject h j) =>
-  HFix j a ->
-  Maybe (HFix h a)
-hproject =
-  hcataM' (fmap wrap . unMaybeHomM)
-  . hcata' (wrap . prj . hproject')
-  where
-    prj :: forall h r a. Maybe (h r a) -> (HMaybe :.: h) r a
-    prj (Just a) = HComp (HJust a)
-    prj Nothing  = HComp HNothing
+bsum ::
+  (KnownSymbol sum,
+   Typeable t)
+  => Number
+  -> CPSFuzz f (Bag Number)
+  -> (Name sum (CPSFuzz f Number) -> CPSFuzz f t)
+  -> CPSFuzz f t
+bsum clip input kont =
+  xwrap . hinject' $ BSumF (Vec [clip]) input (toDeepRepr kont)
 
-unMaybeHomM :: (HMaybe :.: h) f a -> Maybe (h f a)
-unMaybeHomM (HComp (HJust a)) = Just a
-unMaybeHomM (HComp HNothing)  = Nothing
+instance (Typeable a, Num a, Show a) => Num (CPSFuzz f a) where
+  a + b = xwrap . hinject' $ PAddF a b
+  a * b = xwrap . hinject' $ PMultF a b
+  a - b = xwrap . hinject' $ PSubF a b
+  abs = xwrap . hinject' . PAbsF
+  signum = xwrap . hinject' . PSignumF
+  fromInteger = xwrap . hinject' . PLitF . fromInteger
 
 -- ##################
 -- # LANGUAGE TOOLS #
 -- ##################
-
-
-class SynMonad h (m :: * -> *) where
-  infixl 1 >>=.
-  (>>=.) :: (KnownSymbol s, Typeable a, Typeable b)
-    => h (m a) -> (Name s (h a) -> h (m b)) -> h (m b)
-  ret :: Typeable a => h a -> h (m a)
-
-instance SynMonad (CPSFuzz f) Distr where
-  m >>=. f = xwrap . hinject' $ XEBindF m f
-  ret = xwrap . hinject' . XEReturnF
 
 data AnyCPSFuzz where
   AnyCPSFuzz :: Typeable a => HFix ExprF a -> AnyCPSFuzz
@@ -443,90 +339,9 @@ prettyExprF (EAppF (unK -> a) (unK -> b)) = K . parens $ a <+> b
 prettyExpr :: HFix ExprF a -> Doc
 prettyExpr = unK . hcata prettyExprF . relax
 
--- ##########################################
--- # General higher-order functor instances #
--- ##########################################
-
-instance HFunctor HMaybe where
-  hmap f =
-    \case
-      HJust a -> HJust (f a)
-      HNothing -> HNothing
-
-instance HFoldable HMaybe where
-  hfoldMap f =
-    \case
-      HJust a -> f a
-      HNothing -> mempty
-
-instance HTraversable HMaybe where
-  htraverse f =
-    \case
-      HJust a -> HJust <$> f a
-      HNothing -> pure HNothing
-
-instance HFunctor h => HFunctor (HXFix h) where
-  hmap f =
-    \case
-      HXFix term -> HXFix (hmap (hmap f) term)
-      Place term -> Place (f term)
-
-instance HFoldable h => HFoldable (HXFix h) where
-  hfoldMap = hfoldMap'
-    where
-      hfoldMap' ::
-        forall m f. Monoid m => (forall a. f a -> m) -> (forall a. HXFix h f a -> m)
-      hfoldMap' f (Place a) = f a
-      hfoldMap' f (HXFix a) = hfoldMap (hfoldMap' f) a
-
-instance HTraversable h => HTraversable (HXFix h) where
-  htraverse = htraverse'
-    where
-      htraverse' ::
-        forall m f g.
-        Applicative m =>
-        (forall a. f a -> m (g a)) ->
-        (forall a. HXFix h f a -> m (HXFix h g a))
-      htraverse' f (Place a) = Place <$> f a
-      htraverse' f (HXFix a) = HXFix <$> htraverse (htraverse' f) a
-
-instance (HFunctor f, HFunctor g) => HFunctor (f :.: g) where
-  hmap f =
-    \case
-      HComp a -> HComp (hmap (hmap f) a)
-
-instance (HFoldable f, HFoldable g) => HFoldable (f :.: g) where
-  hfoldMap f =
-    \case
-      HComp a -> hfoldMap (hfoldMap f) a
-
-instance (HTraversable f, HTraversable g) => HTraversable (f :.: g) where
-  htraverse f =
-    \case
-      HComp a -> HComp <$> htraverse (htraverse f) a
-
-instance (HFunctor f, HFunctor g) => HFunctor (f :+: g) where
-  hmap f =
-    \case
-      Inl left -> Inl $ hmap f left
-      Inr right -> Inr $ hmap f right
-
-instance (HFoldable f, HFoldable g) => HFoldable (f :+: g) where
-  hfoldMap f =
-    \case
-      Inl left -> hfoldMap f left
-      Inr right -> hfoldMap f right
-
-instance (HTraversable f, HTraversable g) => HTraversable (f :+: g) where
-  htraverse f =
-    \case
-      Inl left -> Inl <$> htraverse f left
-      Inr right -> Inr <$> htraverse f right
-
-instance (HInject h j, HInject j l) => HInject (DeriveHInjectTrans h j l) l where
-  hinject' (DeriveHInjectTrans a) = hinject' @j @l . hinject' @h @j $ a
-  hproject' a =
-    hproject' @j @l a >>= hproject' @h @j >>= (return . DeriveHInjectTrans)
+-- ########################
+-- # Necessary injections #
+-- ########################
 
 instance HInject BagOpF (BagOpF :+: h) where
   hinject' = Inl
