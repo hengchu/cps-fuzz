@@ -271,6 +271,12 @@ instance (HFunctor f, HFunctor g) => HFunctor (f :+: g) where
       Inl left -> Inl $ hmap f left
       Inr right -> Inr $ hmap f right
 
+instance (HXFunctor f, HXFunctor g) => HXFunctor (f :+: g) where
+  hxmap f g =
+    \case
+      Inl left -> Inl $ hxmap f g left
+      Inr right -> Inr $ hxmap f g right
+
 instance (HFoldable f, HFoldable g) => HFoldable (f :+: g) where
   hfoldMap f =
     \case
