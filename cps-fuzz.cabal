@@ -41,6 +41,7 @@ library
                 , Pretty
                 , Names
                 , Syntax
+                , Examples
   default-extensions:
                    DataKinds
                  , DeriveGeneric
