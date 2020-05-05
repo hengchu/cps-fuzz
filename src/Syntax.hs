@@ -4,19 +4,19 @@
 -- of fixpoint of GADTs. Mostly useless.
 module Syntax where
 
+import Control.Lens
+import Control.Monad.Catch
+import Data.Fix
+import Data.Functor
+import Data.Functor.Compose
 import Data.Functor.Identity
 import Data.Kind
+import Data.Proxy
 import qualified Data.Set as S
+import GHC.TypeLits
 import Names
 import Text.PrettyPrint.ANSI.Leijen hiding ((<$>))
 import Type.Reflection
-import Data.Functor
-import Data.Functor.Compose
-import Data.Fix
-import GHC.TypeLits
-import Data.Proxy
-import Control.Monad.Catch
-import Control.Lens
 
 newtype K a b = K a
   deriving (Show, Eq, Ord, Functor)
@@ -24,6 +24,7 @@ newtype K a b = K a
 newtype DeriveHXFunctor h f a = DeriveHXFunctor (h f a)
 
 infixl 6 :+:
+
 infixr 9 :.:
 
 type h :.: j = HComp h j
@@ -39,9 +40,7 @@ withName = WithName (Proxy @s)
 
 data
   (f :: (* -> *) -> * -> *)
-  :+:
-  (g :: (* -> *) -> * -> *)
-  :: (* -> *) -> * -> * where
+    :+: (g :: (* -> *) -> * -> *) :: (* -> *) -> * -> * where
   Inl :: f r a -> (f :+: g) r a
   Inr :: g r a -> (f :+: g) r a
 
@@ -49,9 +48,9 @@ unK :: K a b -> a
 unK (K a) = a
 
 data HMaybe f a where
-  HJust    :: f a -> HMaybe f a
+  HJust :: f a -> HMaybe f a
   HNothing :: HMaybe f a
-  deriving HXFunctor via (DeriveHXFunctor HMaybe)
+  deriving (HXFunctor) via (DeriveHXFunctor HMaybe)
 
 -- | Take the fixpoint of a functor-functor.
 data HXFix (h :: (* -> *) -> * -> *) (f :: * -> *) (a :: *) where
@@ -66,7 +65,7 @@ class
   HInject
     (h :: (* -> *) -> * -> *)
     (j :: (* -> *) -> * -> *) where
-  hinject'  :: h r a -> j r a
+  hinject' :: h r a -> j r a
   hproject' :: j r a -> (HMaybe :.: h) r a
 
 class HFunctor (h :: (* -> *) -> * -> *) where
@@ -134,7 +133,7 @@ data ExprMonadF :: (* -> *) -> * -> * where
     r a ->
     r (a -> Distr b) ->
     ExprMonadF r (Distr b)
-  deriving HXFunctor via (DeriveHXFunctor ExprMonadF)
+  deriving (HXFunctor) via (DeriveHXFunctor ExprMonadF)
 
 instance HFunctor HMaybe where
   hmap f =
@@ -160,7 +159,8 @@ instance HTraversable h => HTraversable (HXFix h) where
   htraverse = htraverse'
     where
       htraverse' ::
-        forall m f g. Applicative m =>
+        forall m f g.
+        Applicative m =>
         (forall a. f a -> m (g a)) ->
         (forall a. HXFix h f a -> m (HXFix h g a))
       htraverse' f (Place a) = Place <$> f a
@@ -253,6 +253,8 @@ lam t = xwrap (XELamF t)
 app :: (Typeable a, Typeable b) => XExpr f (a -> b) -> XExpr f a -> XExpr f b
 app f t = xwrap (XEAppF f t)
 
+-- | Relax a fixpoint into a fixpoint potentially with holes in it. This allows
+-- us to fold over the structure with catamorphism.
 relax :: HFunctor h => HFix h a -> HXFix h f a
 relax (HFix term) = HXFix . (hmap relax) $ term
 
@@ -281,6 +283,14 @@ hcata alg (HXFix term) = alg . go $ term
   where
     go = hmap (hcata alg)
 
+hcata' ::
+  forall h f.
+  HFunctor h =>
+  (forall a. h f a -> f a) ->
+  (forall a. HFix h a -> f a)
+hcata' alg (HFix term) =
+  alg . hmap (hcata' alg) $ term
+
 hcataM ::
   forall h f m.
   (HTraversable h, Monad m) =>
@@ -288,6 +298,13 @@ hcataM ::
   (forall a. HXFix h f a -> m (f a))
 hcataM algM (Place term) = pure term
 hcataM algM (HXFix term) = (algM =<<) . htraverse (hcataM algM) $ term
+
+hcataM' ::
+  forall h f m.
+  (HTraversable h, Monad m) =>
+  (forall a. h f a -> m (f a)) ->
+  (forall a. HFix h a -> m (f a))
+hcataM' algM (HFix term) = (algM =<<) . htraverse (hcataM' algM) $ term
 
 -- | Lifting functor-functors through injection.
 hinject ::
@@ -311,19 +328,23 @@ hproject = hcata (xwrap . hproject')
 data AnyExpr where
   AnyExpr :: Typeable a => HFix ExprF a -> AnyExpr
 
-data TypeCheckError =
-  TypeCheckError {
-  _tceExpected :: SomeTypeRep,
-  _tceObserved :: SomeTypeRep
-  }
+data TypeCheckError
+  = TypeCheckError
+      { _tceExpected :: SomeTypeRep,
+        _tceObserved :: SomeTypeRep
+      }
   deriving (Show, Eq, Ord)
 
 instance Exception TypeCheckError
 
 makeLensesWith abbreviatedFields ''TypeCheckError
 
-namedAlg :: forall a m.
-  (Typeable m, FreshM m, MonadThrow m) => XExprF (K (m AnyExpr)) a -> K (m AnyExpr) a
+-- | Algebra for name conversion.
+namedAlg ::
+  forall a m.
+  (Typeable m, FreshM m, MonadThrow m) =>
+  XExprF (K (m AnyExpr)) a ->
+  K (m AnyExpr) a
 namedAlg (XEVarF x) = K . return . AnyExpr @a . wrap . EVarF . Var $ x
 namedAlg (XELamF (WithName (p :: Proxy name) (lam :: (K (m AnyExpr) a1 -> _ b1)))) = K $ do
   freshVar <- Var @a1 <$> gfresh (symbolVal p)
@@ -336,30 +357,39 @@ namedAlg (XEAppF (a :: _ fun) (b :: _ arg)) = K $ do
   b' <- unK b
   case (a', b') of
     (AnyExpr (a' :: _ fun'), AnyExpr (b' :: _ arg')) ->
-      case ( eqTypeRep (typeRep @fun) (typeRep @fun')
-           , eqTypeRep (typeRep @arg) (typeRep @arg')
+      case ( eqTypeRep (typeRep @fun) (typeRep @fun'),
+             eqTypeRep (typeRep @arg) (typeRep @arg')
            ) of
         (Just HRefl, Just HRefl) ->
           return . AnyExpr . wrap $ EAppF a' b'
         (Nothing, _) ->
-          throwM $ TypeCheckError
-          (SomeTypeRep $ typeRep @fun)
-          (SomeTypeRep $ typeRep @fun')
-        _ -> throwM $ TypeCheckError
-          (SomeTypeRep $ typeRep @arg)
-          (SomeTypeRep $ typeRep @arg')
+          throwM $
+            TypeCheckError
+              (SomeTypeRep $ typeRep @fun)
+              (SomeTypeRep $ typeRep @fun')
+        _ ->
+          throwM $
+            TypeCheckError
+              (SomeTypeRep $ typeRep @arg)
+              (SomeTypeRep $ typeRep @arg')
 
-named :: forall a m. (Typeable m, FreshM m, MonadThrow m, Typeable a)
-  => (forall f. HXFix XExprF f a) -> m (HFix ExprF a)
+-- | Convert an HOAS encoded term into an explicitly named term.
+named ::
+  forall a m.
+  (Typeable m, FreshM m, MonadThrow m, Typeable a) =>
+  (forall f. HXFix XExprF f a) ->
+  m (HFix ExprF a)
 named term = do
   term' <- unK $ hxcata namedAlg term
   case term' of
     AnyExpr (term' :: _ a1) ->
       case eqTypeRep (typeRep @a1) (typeRep @a) of
         Just HRefl -> return term'
-        _ -> throwM $ TypeCheckError
-          (SomeTypeRep (typeRep @a))
-          (SomeTypeRep (typeRep @a1))
+        _ ->
+          throwM $
+            TypeCheckError
+              (SomeTypeRep (typeRep @a))
+              (SomeTypeRep (typeRep @a1))
 
 -- ############
 -- # EXAMPLES #
@@ -384,10 +414,11 @@ instance Syntactic (XExpr f) (XExpr f a) where
   fromDeepRepr = id
 
 instance
-  (Typeable (DeepRepr a),
-   Typeable (DeepRepr b),
-   Syntactic (XExpr f) a,
-   Syntactic (XExpr f) b) =>
+  ( Typeable (DeepRepr a),
+    Typeable (DeepRepr b),
+    Syntactic (XExpr f) a,
+    Syntactic (XExpr f) b
+  ) =>
   Syntactic (XExpr f) (WithName (a -> b))
   where
   type DeepRepr (WithName (a -> b)) = (DeepRepr a -> DeepRepr b)
@@ -405,8 +436,9 @@ prettyExprF ::
   ExprF (K Doc) a ->
   K Doc a
 prettyExprF (EVarF (Var x)) = K $ text x
-prettyExprF (ELamF (Var bound) body) = K . parens $
-  text "\\" <> text bound <> text "." <+> unK body
+prettyExprF (ELamF (Var bound) body) =
+  K . parens $
+    text "\\" <> text bound <> text "." <+> unK body
 prettyExprF (EAppF (unK -> a) (unK -> b)) = K . parens $ a <+> b
 
 prettyExpr :: HFix ExprF a -> Doc
