@@ -467,7 +467,113 @@ instance Exception TypeCheckError
 
 fvBagOpF :: BagOpF (K (S.Set String)) a
          -> K (S.Set String) a
-fvBagOpF = undefined
+fvBagOpF (BMapF (unK -> f) (unK -> db) (unK -> kont)) = K $ f <> db <> kont
+fvBagOpF (BSumF _ (unK -> db) (unK -> kont)) = K $ db <> kont
+
+fvBagOpFM :: FreshM m =>
+  BagOpF (K (m (S.Set String))) a ->
+  K (m (S.Set String)) a
+fvBagOpFM (BMapF (unK -> f) (unK -> db) (unK -> kont)) = K $ S.union <$> f <*> (S.union <$> db <*> kont)
+fvBagOpFM (BSumF _ (unK -> db) (unK -> kont)) = K $ S.union <$> db <*> kont
+
+fvXExprMonadF ::
+  FreshM m =>
+  XExprMonadF (K (m (S.Set String))) a ->
+  K (m (S.Set String)) a
+fvXExprMonadF (XELaplaceF _ (unK -> w)) = K w
+fvXExprMonadF (XEReturnF (unK -> a)) = K a
+fvXExprMonadF (XEBindF (unK -> m) f) = K $ do
+  m' <- m
+  x <- gfresh "x"
+  f' <- unK $ f (N . K . return . S.singleton $ x)
+  return $ S.union m' (S.delete x f')
+
+fvXExprF ::
+  FreshM m =>
+  XExprF (K (m (S.Set String))) a ->
+  K (m (S.Set String)) a
+fvXExprF (XEVarF x) = K . return . S.singleton $ x
+fvXExprF (XELamF f) = K $ do
+  x <- gfresh "x"
+  f' <- unK $ f (N . K . return . S.singleton $ x)
+  return $ S.delete x f'
+fvXExprF (XEAppF (unK -> a) (unK -> b)) =
+  K $ S.union <$> a <*> b
+
+fvControlF ::
+  ControlF (K (S.Set String)) a ->
+  K (S.Set String) a
+fvControlF (CIfF (unK -> cond) (unK -> a) (unK -> b)) = K $ cond <> a <> b
+
+fvControlFM ::
+  FreshM m =>
+  ControlF (K (m (S.Set String))) a ->
+  K (m (S.Set String)) a
+fvControlFM (CIfF (unK -> cond) (unK -> a) (unK -> b)) =
+  K $ S.union <$> cond <*> (S.union <$> a <*> b)
+
+fvPrimF ::
+  PrimF (K (S.Set String)) a ->
+  K (S.Set String) a
+fvPrimF (PLitF _) = K mempty
+fvPrimF (PAddF (unK -> a) (unK -> b)) = K $ a <> b
+fvPrimF (PSubF (unK -> a) (unK -> b)) = K $ a <> b
+fvPrimF (PMultF (unK -> a) (unK -> b)) = K $ a <> b
+fvPrimF (PDivF (unK -> a) (unK -> b)) = K $ a <> b
+fvPrimF (PAbsF (unK -> a)) = K a
+fvPrimF (PSignumF (unK -> a)) = K a
+fvPrimF (PExpF (unK -> a)) = K a
+fvPrimF (PSqrtF (unK -> a)) = K a
+fvPrimF (PLogF (unK -> a)) = K a
+fvPrimF (PGTF (unK -> a) (unK -> b)) = K $ a <> b
+fvPrimF (PGEF (unK -> a) (unK -> b)) = K $ a <> b
+fvPrimF (PLTF (unK -> a) (unK -> b)) = K $ a <> b
+fvPrimF (PLEF (unK -> a) (unK -> b)) = K $ a <> b
+fvPrimF (PEQF (unK -> a) (unK -> b)) = K $ a <> b
+fvPrimF (PNEQF (unK -> a) (unK -> b)) = K $ a <> b
+fvPrimF (PJustF (unK -> a)) = K a
+fvPrimF PNothingF = K mempty
+fvPrimF (PFromJustF (unK -> a)) = K a
+fvPrimF (PIsJustF (unK -> a)) = K a
+fvPrimF (PPairF (unK -> a) (unK -> b)) = K $ a <> b
+fvPrimF (PFstF (unK -> a)) = K a
+fvPrimF (PSndF (unK -> a)) = K a
+
+fvPrimFM ::
+  FreshM m =>
+  PrimF (K (m (S.Set String))) a ->
+  K (m (S.Set String)) a
+fvPrimFM (PLitF _) = K $ pure mempty
+fvPrimFM (PAddF (unK -> a) (unK -> b)) = K $ S.union <$> a <*> b
+fvPrimFM (PSubF (unK -> a) (unK -> b)) = K $ S.union <$> a <*> b
+fvPrimFM (PMultF (unK -> a) (unK -> b)) = K $ S.union <$> a <*> b
+fvPrimFM (PDivF (unK -> a) (unK -> b)) = K $ S.union <$> a <*> b
+fvPrimFM (PAbsF (unK -> a)) = K a
+fvPrimFM (PSignumF (unK -> a)) = K a
+fvPrimFM (PExpF (unK -> a)) = K a
+fvPrimFM (PSqrtF (unK -> a)) = K a
+fvPrimFM (PLogF (unK -> a)) = K a
+fvPrimFM (PGTF (unK -> a) (unK -> b)) = K $ S.union <$> a <*> b
+fvPrimFM (PGEF (unK -> a) (unK -> b)) = K $ S.union <$> a <*> b
+fvPrimFM (PLTF (unK -> a) (unK -> b)) = K $ S.union <$> a <*> b
+fvPrimFM (PLEF (unK -> a) (unK -> b)) = K $ S.union <$> a <*> b
+fvPrimFM (PEQF (unK -> a) (unK -> b)) = K $ S.union <$> a <*> b
+fvPrimFM (PNEQF (unK -> a) (unK -> b)) = K $ S.union <$> a <*> b
+fvPrimFM (PJustF (unK -> a)) = K a
+fvPrimFM PNothingF = K $ pure mempty
+fvPrimFM (PFromJustF (unK -> a)) = K a
+fvPrimFM (PIsJustF (unK -> a)) = K a
+fvPrimFM (PPairF (unK -> a) (unK -> b)) = K $ S.union <$> a <*> b
+fvPrimFM (PFstF (unK -> a)) = K a
+fvPrimFM (PSndF (unK -> a)) = K a
+
+fvCPSFuzzF :: FreshM m =>
+  CPSFuzzF (K (m (S.Set String))) a ->
+  K (m (S.Set String)) a
+fvCPSFuzzF = fvBagOpFM `sumAlg` fvXExprMonadF `sumAlg` fvXExprF `sumAlg` fvControlFM `sumAlg` fvPrimFM
+
+fvCPSFuzz :: (forall f. CPSFuzz f a) -> S.Set String
+fvCPSFuzz = flip evalState emptyNameState . unK . hxcata fvCPSFuzzF
 
 -- ##################
 -- # INFRASTRUCTURE #
