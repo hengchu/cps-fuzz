@@ -77,7 +77,7 @@ class Monad m => FreshM m where
           modifyNameState (\st -> st & locals %~ (const $ c' : cs))
           return (hint ++ show nextIdx)
 
-instance FreshM (State NameState) where
+instance Monad m => FreshM (StateT NameState m) where
   getNameState = get
   modifyNameState = modify
 

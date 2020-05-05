@@ -4,22 +4,24 @@
 -- of fixpoint of GADTs. Mostly useless.
 module Syntax where
 
---import Lib
---import Names
-
 import Data.Functor.Identity
 import Data.Kind
 import qualified Data.Set as S
 import Names
-import Text.PrettyPrint.ANSI.Leijen
+import Text.PrettyPrint.ANSI.Leijen hiding ((<$>))
 import Type.Reflection
 import Data.Functor
 import Data.Functor.Compose
 import Data.Fix
+import GHC.TypeLits
+import Data.Proxy
+import Control.Monad.Catch
+import Control.Lens
 
 newtype K a b = K a
   deriving (Show, Eq, Ord, Functor)
 
+newtype DeriveHXFunctor h f a = DeriveHXFunctor (h f a)
 
 infixl 6 :+:
 infixr 9 :.:
@@ -29,7 +31,17 @@ type h :.: j = HComp h j
 newtype HComp h j r a where
   HComp :: h (j r) a -> HComp h j r a
 
-data (f :: (* -> *) -> * -> *) :+: (g :: (* -> *) -> * -> *) :: (* -> *) -> * -> * where
+data WithName :: * -> * where
+  WithName :: KnownSymbol s => Proxy s -> r -> WithName r
+
+withName :: forall s r. KnownSymbol s => r -> WithName r
+withName = WithName (Proxy @s)
+
+data
+  (f :: (* -> *) -> * -> *)
+  :+:
+  (g :: (* -> *) -> * -> *)
+  :: (* -> *) -> * -> * where
   Inl :: f r a -> (f :+: g) r a
   Inr :: g r a -> (f :+: g) r a
 
@@ -39,11 +51,15 @@ unK (K a) = a
 data HMaybe f a where
   HJust    :: f a -> HMaybe f a
   HNothing :: HMaybe f a
+  deriving HXFunctor via (DeriveHXFunctor HMaybe)
 
 -- | Take the fixpoint of a functor-functor.
-data HFix (h :: (* -> *) -> * -> *) (f :: * -> *) (a :: *) where
-  HFix  :: h (HFix h f) a -> HFix h f a
-  Place :: f a -> HFix h f a
+data HXFix (h :: (* -> *) -> * -> *) (f :: * -> *) (a :: *) where
+  HXFix :: h (HXFix h f) a -> HXFix h f a
+  Place :: f a -> HXFix h f a
+
+data HFix (h :: (* -> *) -> * -> *) (a :: *) where
+  HFix :: h (HFix h) a -> HFix h a
 
 -- | Inject one HXFunctor into another.
 class
@@ -53,11 +69,32 @@ class
   hinject'  :: h r a -> j r a
   hproject' :: j r a -> (HMaybe :.: h) r a
 
+class HFunctor (h :: (* -> *) -> * -> *) where
+  hmap ::
+    (forall a. f a -> g a) ->
+    (forall a. h f a -> h g a)
+
+class HFunctor h => HFoldable h where
+  hfoldMap ::
+    Monoid m =>
+    (forall a. f a -> m) ->
+    (forall a. h f a -> m)
+
+class HFoldable h => HTraversable h where
+  htraverse ::
+    Applicative m =>
+    (forall a. f a -> m (g a)) ->
+    (forall a. h f a -> m (h g a))
+
 class HXFunctor (h :: (* -> *) -> * -> *) where
   hxmap ::
     (forall a. f a -> g a) ->
     (forall a. g a -> f a) ->
     (forall a. h f a -> h g a)
+
+-- morally true, but overlaps with other instances
+instance HFunctor h => HXFunctor (DeriveHXFunctor h) where
+  hxmap f _ (DeriveHXFunctor term) = DeriveHXFunctor $ hmap f term
 
 -- | Takes 2 algebras and lift them to an algebra on the sum type.
 sumAlg ::
@@ -76,9 +113,17 @@ type Distr = Identity
 
 type Number = Double
 
+data XExprF :: (* -> *) -> * -> * where
+  XEVarF :: Typeable a => String -> XExprF r a
+  XELamF :: (Typeable a, Typeable b) => WithName (r a -> r b) -> XExprF r (a -> b)
+  XEAppF :: (Typeable a, Typeable b) => r (a -> b) -> r a -> XExprF r b
+
+data Var (a :: *) where
+  Var :: Typeable a => String -> Var a
+
 data ExprF :: (* -> *) -> * -> * where
-  EVarF :: Typeable a => String -> ExprF r a
-  ELamF :: (Typeable a, Typeable b) => (r a -> r b) -> ExprF r (a -> b)
+  EVarF :: Typeable a => Var a -> ExprF r a
+  ELamF :: (Typeable a, Typeable b) => Var a -> r b -> ExprF r (a -> b)
   EAppF :: (Typeable a, Typeable b) => r (a -> b) -> r a -> ExprF r b
 
 data ExprMonadF :: (* -> *) -> * -> * where
@@ -89,196 +134,280 @@ data ExprMonadF :: (* -> *) -> * -> * where
     r a ->
     r (a -> Distr b) ->
     ExprMonadF r (Distr b)
+  deriving HXFunctor via (DeriveHXFunctor ExprMonadF)
 
-instance HXFunctor HMaybe where
-  hxmap f _ =
+instance HFunctor HMaybe where
+  hmap f =
     \case
       HJust a -> HJust (f a)
       HNothing -> HNothing
 
-instance (HXFunctor f, HXFunctor g) => HXFunctor (f :.: g) where
+instance HFunctor h => HFunctor (HXFix h) where
+  hmap f =
+    \case
+      HXFix term -> HXFix (hmap (hmap f) term)
+      Place term -> Place (f term)
+
+instance HFoldable h => HFoldable (HXFix h) where
+  hfoldMap = hfoldMap'
+    where
+      hfoldMap' ::
+        forall m f. Monoid m => (forall a. f a -> m) -> (forall a. HXFix h f a -> m)
+      hfoldMap' f (Place a) = f a
+      hfoldMap' f (HXFix a) = hfoldMap (hfoldMap' f) a
+
+instance HTraversable h => HTraversable (HXFix h) where
+  htraverse = htraverse'
+    where
+      htraverse' ::
+        forall m f g. Applicative m =>
+        (forall a. f a -> m (g a)) ->
+        (forall a. HXFix h f a -> m (HXFix h g a))
+      htraverse' f (Place a) = Place <$> f a
+      htraverse' f (HXFix a) = HXFix <$> htraverse (htraverse' f) a
+
+instance (HFunctor f, HFunctor g) => HFunctor (f :.: g) where
+  hmap f =
+    \case
+      HComp a -> HComp (hmap (hmap f) a)
+
+instance (HFoldable f, HFoldable g) => HFoldable (f :.: g) where
+  hfoldMap f =
+    \case
+      HComp a -> hfoldMap (hfoldMap f) a
+
+instance (HTraversable f, HTraversable g) => HTraversable (f :.: g) where
+  htraverse f =
+    \case
+      HComp a -> HComp <$> htraverse (htraverse f) a
+
+instance (HFunctor f, HFunctor g) => HFunctor (f :+: g) where
+  hmap f =
+    \case
+      Inl left -> Inl $ hmap f left
+      Inr right -> Inr $ hmap f right
+
+instance (HFoldable f, HFoldable g) => HFoldable (f :+: g) where
+  hfoldMap f =
+    \case
+      Inl left -> hfoldMap f left
+      Inr right -> hfoldMap f right
+
+instance (HTraversable f, HTraversable g) => HTraversable (f :+: g) where
+  htraverse f =
+    \case
+      Inl left -> Inl <$> htraverse f left
+      Inr right -> Inr <$> htraverse f right
+
+instance HXFunctor XExprF where
   hxmap f g =
     \case
-      HComp a -> HComp (hxmap (hxmap f g) (hxmap g f) a)
+      XEVarF x -> XEVarF x
+      XELamF (WithName p lam) -> XELamF . WithName p $ (f . lam . g)
+      XEAppF lam arg -> XEAppF (f lam) (f arg)
 
-instance (HXFunctor f, HXFunctor g) => HXFunctor (f :+: g) where
-  hxmap f g =
-    \case
-      Inl left -> Inl $ hxmap f g left
-      Inr right -> Inr $ hxmap f g right
-
-instance HXFunctor ExprF where
-  hxmap f g =
+instance HFunctor ExprF where
+  hmap f =
     \case
       EVarF x -> EVarF x
-      ELamF lam -> ELamF $ (f . lam . g)
-      EAppF lam arg -> EAppF (f lam) (f arg)
+      ELamF bound (f -> body) -> ELamF bound body
+      EAppF (f -> lam) (f -> body) -> EAppF lam body
 
-instance HXFunctor ExprMonadF where
-  hxmap f _ =
+instance HFoldable ExprF where
+  hfoldMap f =
+    \case
+      EVarF x -> mempty
+      ELamF _ (f -> body) -> body
+      EAppF (f -> lam) (f -> body) -> lam <> body
+
+instance HTraversable ExprF where
+  htraverse f =
+    \case
+      EVarF x -> pure (EVarF x)
+      ELamF bound (f -> mbody) -> ELamF bound <$> mbody
+      EAppF (f -> lam) (f -> body) -> EAppF <$> lam <*> body
+
+instance HFunctor ExprMonadF where
+  hmap f =
     \case
       ELaplaceF c w -> ELaplaceF c (f w)
       EReturnF a -> EReturnF (f a)
       EBindF a k -> EBindF (f a) (f k)
 
-instance HInject ExprF (ExprF :+: ExprMonadF) where
-  hinject' =
-    \case
-      EVarF x -> Inl (EVarF x)
-      ELamF f -> Inl (ELamF f)
-      EAppF a b -> Inl (EAppF a b)
-
-instance HInject ExprMonadF (ExprF :+: ExprMonadF) where
-  hinject' =
-    \case
-      ELaplaceF c w -> Inr (ELaplaceF c w)
-      EReturnF a -> Inr (EReturnF a)
-      EBindF a b -> Inr (EBindF a b)
-
 -- | The functor-like variable `f` is the interpretation domain. Examples
 -- include: `Doc` for pretty-printing, `Identity` for evaluation, etc.
-type Expr f = HFix ExprF f
+type XExpr f = HXFix XExprF f
 
-type ExprM f = HFix (ExprF :+: ExprMonadF) f
+xwrap :: h (HXFix h f) a -> HXFix h f a
+xwrap = HXFix
 
-wrap :: h (HFix h f) a -> HFix h f a
+wrap :: h (HFix h) a -> HFix h a
 wrap = HFix
 
-place :: f a -> HFix h f a
-place = Place
+xplace :: f a -> HXFix h f a
+xplace = Place
 
-lam :: (Typeable a, Typeable b) => (Expr f a -> Expr f b) -> Expr f (a -> b)
-lam t = wrap (ELamF t)
+lam :: (Typeable a, Typeable b) => WithName (XExpr f a -> XExpr f b) -> XExpr f (a -> b)
+lam t = xwrap (XELamF t)
 
-app :: (Typeable a, Typeable b) => Expr f (a -> b) -> Expr f a -> Expr f b
-app f t = wrap (EAppF f t)
+app :: (Typeable a, Typeable b) => XExpr f (a -> b) -> XExpr f a -> XExpr f b
+app f t = xwrap (XEAppF f t)
+
+relax :: HFunctor h => HFix h a -> HXFix h f a
+relax (HFix term) = HXFix . (hmap relax) $ term
 
 -- | Catamorphism over a functor-functor. But wait a second, can't we just
 -- instantiate `f` with some monad? I guess that's OK... If `a` is a monadic
 -- type, then we just have layers of uncomposed monads. The result will not be a
 -- monad transformer stack, as the binds of `f` do not propagate into `a`, but
 -- that's OK maybe?
-hcata ::
+hxcata ::
   forall h f.
   HXFunctor h =>
   (forall a. h f a -> f a) ->
-  (forall a. HFix h f a -> f a)
-hcata _ (Place term) = term
-hcata alg (HFix term) = alg . go $ term
+  (forall a. HXFix h f a -> f a)
+hxcata _ (Place term) = term
+hxcata alg (HXFix term) = alg . go $ term
   where
-    go = hxmap (hcata alg) place
+    go = hxmap (hxcata alg) xplace
+
+hcata ::
+  forall h f.
+  HFunctor h =>
+  (forall a. h f a -> f a) ->
+  (forall a. HXFix h f a -> f a)
+hcata alg (Place term) = term
+hcata alg (HXFix term) = alg . go $ term
+  where
+    go = hmap (hcata alg)
+
+hcataM ::
+  forall h f m.
+  (HTraversable h, Monad m) =>
+  (forall a. h f a -> m (f a)) ->
+  (forall a. HXFix h f a -> m (f a))
+hcataM algM (Place term) = pure term
+hcataM algM (HXFix term) = (algM =<<) . htraverse (hcataM algM) $ term
 
 -- | Lifting functor-functors through injection.
 hinject ::
   forall h j f a.
-  (HXFunctor h, HInject h j) =>
-  (forall f. HFix h f a) ->
-  HFix j f a
-hinject = hcata (wrap . hinject')
+  (HFunctor h, HInject h j) =>
+  (forall f. HXFix h f a) ->
+  HXFix j f a
+hinject = hcata (xwrap . hinject')
 
 hproject ::
   forall h j f a.
-  (HXFunctor j, HInject h j) =>
-  (forall f. HFix j f a) ->
-  HFix (HMaybe :.: h) f a
-hproject = hcata (wrap . hproject')
-
-unwrap :: (HMaybe :.: h) (Compose Maybe (HFix h f)) a -> Maybe (h (Compose Maybe (HFix h f)) a)
-unwrap (HComp (HJust a)) = Just a
-unwrap (HComp HNothing) = Nothing
-
-isJustAlg :: h (Compose Maybe (HFix h f)) a -> Compose Maybe (HFix h f) a
-isJustAlg = undefined
+  (HFunctor j, HInject h j) =>
+  (forall f. HXFix j f a) ->
+  HXFix (HMaybe :.: h) f a
+hproject = hcata (xwrap . hproject')
 
 -- ##################
 -- # LANGUAGE TOOLS #
 -- ##################
 
-substExprF ::
-  forall r f a.
-  Typeable r =>
-  String ->
-  (Expr f) r ->
-  ExprF (Expr f) a ->
-  (Expr f) a
-substExprF x needle term@(EVarF y) =
-  if x == y
-    then case eqTypeRep (typeRep @r) (typeRep @a) of
-      Just HRefl -> needle
-      Nothing -> wrap term
-    else wrap term
-substExprF _ _ term = wrap term
+data AnyExpr where
+  AnyExpr :: Typeable a => HFix ExprF a -> AnyExpr
 
-substExpr :: Typeable r => String -> (Expr f) r -> (Expr (Expr f)) a -> (Expr f) a
-substExpr x needle = hcata (substExprF x needle)
+data TypeCheckError =
+  TypeCheckError {
+  _tceExpected :: SomeTypeRep,
+  _tceObserved :: SomeTypeRep
+  }
+  deriving (Show, Eq, Ord)
 
-fvF :: FreshM m => ExprF (K (m (S.Set String))) a -> K (m (S.Set String)) a
-fvF (EVarF x) = K . return $ S.singleton x
-fvF (ELamF f) = K $ do
-  x <- gfresh "x"
-  body <- unK $ f (K $ return (S.singleton x))
-  return $ S.delete x body
-fvF (EAppF a b) = K $ do
+instance Exception TypeCheckError
+
+makeLensesWith abbreviatedFields ''TypeCheckError
+
+namedAlg :: forall a m.
+  (Typeable m, FreshM m, MonadThrow m) => XExprF (K (m AnyExpr)) a -> K (m AnyExpr) a
+namedAlg (XEVarF x) = K . return . AnyExpr @a . wrap . EVarF . Var $ x
+namedAlg (XELamF (WithName (p :: Proxy name) (lam :: (K (m AnyExpr) a1 -> _ b1)))) = K $ do
+  freshVar <- Var @a1 <$> gfresh (symbolVal p)
+  body <- (unK . lam) (K . return . AnyExpr . wrap . EVarF $ freshVar)
+  case body of
+    AnyExpr body ->
+      return . AnyExpr . wrap $ ELamF freshVar body
+namedAlg (XEAppF (a :: _ fun) (b :: _ arg)) = K $ do
   a' <- unK a
   b' <- unK b
-  return (S.union a' b')
+  case (a', b') of
+    (AnyExpr (a' :: _ fun'), AnyExpr (b' :: _ arg')) ->
+      case ( eqTypeRep (typeRep @fun) (typeRep @fun')
+           , eqTypeRep (typeRep @arg) (typeRep @arg')
+           ) of
+        (Just HRefl, Just HRefl) ->
+          return . AnyExpr . wrap $ EAppF a' b'
+        (Nothing, _) ->
+          throwM $ TypeCheckError
+          (SomeTypeRep $ typeRep @fun)
+          (SomeTypeRep $ typeRep @fun')
+        _ -> throwM $ TypeCheckError
+          (SomeTypeRep $ typeRep @arg)
+          (SomeTypeRep $ typeRep @arg')
 
-fv :: FreshM m => (forall f. ExprM f a) -> m (S.Set String)
-fv = unK . hcata (fvF `sumAlg` const (K (return S.empty)))
+named :: forall a m. (Typeable m, FreshM m, MonadThrow m, Typeable a)
+  => (forall f. HXFix XExprF f a) -> m (HFix ExprF a)
+named term = do
+  term' <- unK $ hxcata namedAlg term
+  case term' of
+    AnyExpr (term' :: _ a1) ->
+      case eqTypeRep (typeRep @a1) (typeRep @a) of
+        Just HRefl -> return term'
+        _ -> throwM $ TypeCheckError
+          (SomeTypeRep (typeRep @a))
+          (SomeTypeRep (typeRep @a1))
 
 -- ############
 -- # EXAMPLES #
 -- ############
 
-example1 :: forall f. Expr f (Int -> Int)
-example1 = toDeepRepr $ \(x :: Expr f Int) -> x
+example1 :: forall f. XExpr f (Int -> Int)
+example1 = toDeepRepr . withName @"abc" $ \(x :: XExpr f Int) -> x
 
-example2 :: forall f. Expr f Bool
-example2 = wrap (EVarF "y")
+example2 :: forall f. XExpr f Bool
+example2 = xwrap (XEVarF "y")
 
-example3 :: forall f. Expr f (Int -> Bool)
-example3 = toDeepRepr $ \(_ :: Expr f Int) -> (example2 @f)
+example3 :: forall f. XExpr f (Int -> Bool)
+example3 = toDeepRepr . withName @"foo" $ \(_ :: XExpr f Int) -> (example2 @f)
 
 -- ##################
 -- # INFRASTRUCTURE #
 -- ##################
 
-instance Syntactic (Expr f) (Expr f a) where
-  type DeepRepr (Expr f a) = a
+instance Syntactic (XExpr f) (XExpr f a) where
+  type DeepRepr (XExpr f a) = a
   toDeepRepr = id
   fromDeepRepr = id
 
 instance
-  (Typeable (DeepRepr a), Typeable (DeepRepr b), Syntactic (Expr f) a, Syntactic (Expr f) b) =>
-  Syntactic (Expr f) (a -> b)
+  (Typeable (DeepRepr a),
+   Typeable (DeepRepr b),
+   Syntactic (XExpr f) a,
+   Syntactic (XExpr f) b) =>
+  Syntactic (XExpr f) (WithName (a -> b))
   where
-  type DeepRepr (a -> b) = DeepRepr a -> DeepRepr b
+  type DeepRepr (WithName (a -> b)) = (DeepRepr a -> DeepRepr b)
 
-  toDeepRepr f = lam $ toDeepRepr . f . fromDeepRepr
-  fromDeepRepr f = fromDeepRepr . app f . toDeepRepr
+  toDeepRepr (WithName p f) = lam . WithName p $ toDeepRepr . f . fromDeepRepr
+  fromDeepRepr f = withName @"shallowX" $ fromDeepRepr . app f . toDeepRepr
 
 -- Everything below this commment should be in its own module.
 
 -- ##################
 -- # Pretty Printer #
 -- ##################
-prettyExprF ::
-  FreshM m =>
-  ExprF (K (m Doc)) a ->
-  K (m Doc) a
-prettyExprF (EVarF x) = K $ do
-  return $ text x
-prettyExprF (ELamF f) = K $ do
-  x' <- gfresh "x"
-  body <- unK $ f (K $ return (text x'))
-  return $ text "\\" <> text x' <+> text "->" <+> body
-prettyExprF (EAppF a b) = K $ do
-  a' <- unK a
-  b' <- unK b
-  return $ parens $ a' <+> b'
 
-prettyExpr ::
-  FreshM m =>
-  (forall f. Expr f a) ->
-  m Doc
-prettyExpr = unK . hcata prettyExprF
+prettyExprF ::
+  ExprF (K Doc) a ->
+  K Doc a
+prettyExprF (EVarF (Var x)) = K $ text x
+prettyExprF (ELamF (Var bound) body) = K . parens $
+  text "\\" <> text bound <> text "." <+> unK body
+prettyExprF (EAppF (unK -> a) (unK -> b)) = K . parens $ a <+> b
+
+prettyExpr :: HFix ExprF a -> Doc
+prettyExpr = unK . hcata prettyExprF . relax
