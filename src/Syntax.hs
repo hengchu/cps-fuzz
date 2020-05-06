@@ -4,20 +4,20 @@
 -- of fixpoint of GADTs. Mostly useless.
 module Syntax where
 
-import Data.Kind
 import Control.Lens
 import Control.Monad.Catch
 import Control.Monad.State.Strict
+import Data.Kind
+import Data.Proxy
 import qualified Data.Set as S
+import GHC.Stack
 import GHC.TypeLits
 import HFunctor
 import qualified Language.Haskell.TH as TH
 import Names
 import Text.PrettyPrint.ANSI.Leijen hiding ((<$>))
-import Type.Reflection
-import GHC.Stack
-import Data.Proxy
 import Text.Printf
+import Type.Reflection
 
 -- | Carries a statically determined name hint for the wrapped value.
 newtype Name :: Symbol -> * -> * where
@@ -69,7 +69,7 @@ data ExprF :: (* -> *) -> * -> * where
   EVarF :: Typeable a => Var a -> ExprF r a
   ELamF :: (Typeable a, Typeable b) => Var a -> r b -> ExprF r (a -> b)
   EAppF :: (Typeable a, Typeable b) => r (a -> b) -> r a -> ExprF r b
-  deriving HXFunctor via (DeriveHXFunctor ExprF)
+  deriving (HXFunctor) via (DeriveHXFunctor ExprF)
 
 data XExprMonadF :: (* -> *) -> * -> * where
   XELaplaceF :: Number -> r Number -> XExprMonadF r (Distr Number)
@@ -84,7 +84,7 @@ data ExprMonadF :: (* -> *) -> * -> * where
   ELaplaceF :: Number -> r Number -> ExprMonadF r (Distr Number)
   EReturnF :: Typeable a => r a -> ExprMonadF r (Distr a)
   EBindF :: (Typeable a, Typeable b) => r (Distr a) -> Var a -> r (Distr b) -> ExprMonadF r (Distr b)
-  deriving HXFunctor via (DeriveHXFunctor ExprMonadF)
+  deriving (HXFunctor) via (DeriveHXFunctor ExprMonadF)
 
 -- | Primitives supported by the language.
 data PrimF :: (* -> *) -> * -> * where
@@ -113,7 +113,7 @@ data PrimF :: (* -> *) -> * -> * where
   PPairF :: (Typeable a, Typeable b) => r a -> r b -> PrimF r (a, b)
   PFstF :: (Typeable a, Typeable b) => r (a, b) -> PrimF r a
   PSndF :: (Typeable a, Typeable b) => r (a, b) -> PrimF r b
-  deriving HXFunctor via (DeriveHXFunctor PrimF)
+  deriving (HXFunctor) via (DeriveHXFunctor PrimF)
 
 -- | Bag operations.
 data BagOpF :: (* -> *) -> * -> * where
@@ -129,12 +129,12 @@ data BagOpF :: (* -> *) -> * -> * where
     r (Bag Number) ->
     r (Number -> t) ->
     BagOpF r t
-  deriving HXFunctor via (DeriveHXFunctor BagOpF)
+  deriving (HXFunctor) via (DeriveHXFunctor BagOpF)
 
 -- | Control flow of the language.
 data ControlF :: (* -> *) -> * -> * where
   CIfF :: Typeable a => r Bool -> r a -> r a -> ControlF r a
-  deriving HXFunctor via (DeriveHXFunctor ControlF)
+  deriving (HXFunctor) via (DeriveHXFunctor ControlF)
 
 instance HXFunctor XExprF where
   hxmap f g =
@@ -342,9 +342,9 @@ class SynMonad h (m :: * -> *) where
   ret :: Typeable a => h a -> h (m a)
 
 instance SynOrd (CPSFuzz f) where
-  a %< b  = xwrap . hinject' $ PLTF a b
+  a %< b = xwrap . hinject' $ PLTF a b
   a %<= b = xwrap . hinject' $ PLEF a b
-  a %> b  = xwrap . hinject' $ PGTF a b
+  a %> b = xwrap . hinject' $ PGTF a b
   a %>= b = xwrap . hinject' $ PGEF a b
   a %== b = xwrap . hinject' $ PEQF a b
   a %/= b = xwrap . hinject' $ PNEQF a b
@@ -472,22 +472,25 @@ data TypeCheckError
       }
   deriving (Show, Eq, Ord)
 
-data ExpectArrowTypeError =
-  ExpectArrowTypeError { _eatObserved :: SomeTypeRep }
+data ExpectArrowTypeError
+  = ExpectArrowTypeError {_eatObserved :: SomeTypeRep}
   deriving (Show, Eq, Ord)
 
-data ExpectTyConTypeError con =
-  ExpectTyConTypeError
-  { _etctExpected :: TypeRep con,
-    _etctObserved :: SomeTypeRep
-  }
+data ExpectTyConTypeError con
+  = ExpectTyConTypeError
+      { _etctExpected :: TypeRep con,
+        _etctObserved :: SomeTypeRep
+      }
   deriving (Show, Eq, Ord)
 
-type ExpectBagTypeError   = ExpectTyConTypeError Bag
+type ExpectBagTypeError = ExpectTyConTypeError Bag
+
 type ExpectMaybeTypeError = ExpectTyConTypeError Maybe
 
 instance Exception TypeCheckError
+
 instance Exception ExpectArrowTypeError
+
 instance (Typeable k, Typeable a) => Exception (ExpectTyConTypeError (a :: k))
 
 type MonadThrowWithStack m = (MonadThrow m, HasCallStack)
@@ -503,9 +506,11 @@ instance Exception exc => Exception (WithCallStack exc)
 throwM' :: (MonadThrowWithStack m, Exception e) => e -> m a
 throwM' = throwM . WithCallStack callStack
 
-withArrowType :: forall unknown r m.
+withArrowType ::
+  forall unknown r m.
   (MonadThrowWithStack m, Typeable unknown) =>
-  (forall a b. (unknown ~ (a -> b), Typeable a, Typeable b) => Proxy (a -> b) -> m r) -> m r
+  (forall a b. (unknown ~ (a -> b), Typeable a, Typeable b) => Proxy (a -> b) -> m r) ->
+  m r
 withArrowType k =
   case trUnknown of
     App someArrow (b :: TypeRep b) -> case someArrow of
@@ -516,11 +521,14 @@ withArrowType k =
         _ -> throwM' . ExpectArrowTypeError $ (SomeTypeRep trUnknown)
       _ -> throwM' . ExpectArrowTypeError $ (SomeTypeRep trUnknown)
     _ -> throwM' . ExpectArrowTypeError $ (SomeTypeRep trUnknown)
-  where trUnknown = typeRep @unknown
+  where
+    trUnknown = typeRep @unknown
 
-withBagType :: forall unknown r m.
+withBagType ::
+  forall unknown r m.
   (MonadThrowWithStack m, Typeable unknown) =>
-  (forall a. (unknown ~ Bag a, Typeable a) => Proxy (Bag a) -> m r) -> m r
+  (forall a. (unknown ~ Bag a, Typeable a) => Proxy (Bag a) -> m r) ->
+  m r
 withBagType k =
   case trUnknown of
     App someTyCon (a :: TypeRep a) ->
@@ -530,51 +538,59 @@ withBagType k =
           _ -> throwM' $ ExpectTyConTypeError (typeRep @Bag) (SomeTypeRep trUnknown)
         _ -> throwM' $ ExpectTyConTypeError (typeRep @Bag) (SomeTypeRep trUnknown)
     _ -> throwM' $ ExpectTyConTypeError (typeRep @Bag) (SomeTypeRep trUnknown)
-  where trUnknown = typeRep @unknown
+  where
+    trUnknown = typeRep @unknown
 
-withHRefl :: forall a b m r.
+withHRefl ::
+  forall a b m r.
   (Typeable a, Typeable b, MonadThrowWithStack m) =>
-  ((a :~~: b) -> m r) -> m r
+  ((a :~~: b) -> m r) ->
+  m r
 withHRefl k =
   case eqTypeRep (typeRep @a) (typeRep @b) of
     Just HRefl -> k HRefl
     Nothing -> throwM' $ TypeCheckError (SomeTypeRep (typeRep @a)) (SomeTypeRep (typeRep @b))
 
-fvBagOpF :: BagOpF (K (S.Set String)) a
-         -> K (S.Set String) a
+fvBagOpF ::
+  BagOpF (K (S.Set String)) a ->
+  K (S.Set String) a
 fvBagOpF (BMapF (unK -> f) (unK -> db) (unK -> kont)) = K $ f <> db <> kont
 fvBagOpF (BSumF _ (unK -> db) (unK -> kont)) = K $ db <> kont
 
-fvBagOpFM :: FreshM m =>
+fvBagOpFM ::
+  FreshM m =>
   BagOpF (K (m (S.Set String))) a ->
   K (m (S.Set String)) a
 fvBagOpFM (BMapF (unK -> f) (unK -> db) (unK -> kont)) = K $ S.union <$> f <*> (S.union <$> db <*> kont)
 fvBagOpFM (BSumF _ (unK -> db) (unK -> kont)) = K $ S.union <$> db <*> kont
 
-namedBagOpFM :: (MonadThrowWithStack m, FreshM m) =>
+namedBagOpFM ::
+  (MonadThrowWithStack m, FreshM m) =>
   BagOpF (K (m AnyNCPSFuzz)) a ->
   K (m AnyNCPSFuzz) a
 namedBagOpFM (BMapF ((unK -> f) :: _ (a -> b)) ((unK -> db) :: _ (Bag a)) ((unK -> kont) :: _ (Bag b -> t))) = K $ do
-  f'    <- f
-  db'   <- db
+  f' <- f
+  db' <- db
   kont' <- kont
   case (f', db', kont') of
-    (AnyNCPSFuzz (f' :: _ (a_arrow_b)),
-     AnyNCPSFuzz (db' :: _ baga),
-     AnyNCPSFuzz (kont' :: _ (bagb_arrow_t))) ->
-      withHRefl @(a -> b) @a_arrow_b $ \HRefl ->
-      withHRefl @(Bag a) @baga $ \HRefl ->
-      withHRefl @(Bag b -> t) @bagb_arrow_t $ \HRefl ->
-      return . AnyNCPSFuzz . wrap . hinject' $ BMapF f' db' kont'
+    ( AnyNCPSFuzz (f' :: _ (a_arrow_b)),
+      AnyNCPSFuzz (db' :: _ baga),
+      AnyNCPSFuzz (kont' :: _ (bagb_arrow_t))
+      ) ->
+        withHRefl @(a -> b) @a_arrow_b $ \HRefl ->
+          withHRefl @(Bag a) @baga $ \HRefl ->
+            withHRefl @(Bag b -> t) @bagb_arrow_t $ \HRefl ->
+              return . AnyNCPSFuzz . wrap . hinject' $ BMapF f' db' kont'
 namedBagOpFM (BSumF clip ((unK -> db) :: _ (Bag Number)) ((unK -> kont) :: _ (Number -> t))) = K $ do
   db' <- db
   kont' <- kont
   case (db', kont') of
-    (AnyNCPSFuzz (db' :: _ bagnum),
-     AnyNCPSFuzz (kont' :: _ num_arrow_t)) ->
-      withHRefl @(Bag Number) @bagnum $ \HRefl ->
-      withHRefl @(Number -> t) @num_arrow_t $ \HRefl ->
-      return . AnyNCPSFuzz . wrap . hinject' $ BSumF clip db' kont'
+    ( AnyNCPSFuzz (db' :: _ bagnum),
+      AnyNCPSFuzz (kont' :: _ num_arrow_t)
+      ) ->
+        withHRefl @(Bag Number) @bagnum $ \HRefl ->
+          withHRefl @(Number -> t) @num_arrow_t $ \HRefl ->
+            return . AnyNCPSFuzz . wrap . hinject' $ BSumF clip db' kont'
 
 fvXExprMonadF ::
   FreshM m =>
@@ -588,7 +604,8 @@ fvXExprMonadF (XEBindF (unK -> m) f) = K $ do
   f' <- unK $ f (N . K . return . S.singleton $ x)
   return $ S.union m' (S.delete x f')
 
-namedXExprMonadFM :: (MonadThrowWithStack m, FreshM m) =>
+namedXExprMonadFM ::
+  (MonadThrowWithStack m, FreshM m) =>
   XExprMonadF (K (m AnyNCPSFuzz)) a ->
   K (m AnyNCPSFuzz) a
 namedXExprMonadFM (XEReturnF (unK -> a)) = K $ do
@@ -600,17 +617,18 @@ namedXExprMonadFM (XEBindF ((unK -> m) :: _ (Distr a)) (lam :: Name s _ -> _ (Di
   let var = Var @a x
   f' <- unK $ lam (N . K . return . AnyNCPSFuzz . wrap . hinject' $ EVarF var)
   case (m', f') of
-    (AnyNCPSFuzz (m' :: _ distr_a),
-     AnyNCPSFuzz (f' :: _ distr_b)) ->
-      withHRefl @(Distr a) @distr_a $ \HRefl ->
-      withHRefl @(Distr b) @distr_b $ \HRefl ->
-      return . AnyNCPSFuzz . wrap . hinject' $ EBindF m' var f'
+    ( AnyNCPSFuzz (m' :: _ distr_a),
+      AnyNCPSFuzz (f' :: _ distr_b)
+      ) ->
+        withHRefl @(Distr a) @distr_a $ \HRefl ->
+          withHRefl @(Distr b) @distr_b $ \HRefl ->
+            return . AnyNCPSFuzz . wrap . hinject' $ EBindF m' var f'
 namedXExprMonadFM (XELaplaceF w ((unK -> c) :: _ Number)) = K $ do
   c' <- c
   case c' of
     AnyNCPSFuzz (c' :: _ num) ->
       withHRefl @Number @num $ \HRefl ->
-      return . AnyNCPSFuzz . wrap . hinject' $ ELaplaceF w c'
+        return . AnyNCPSFuzz . wrap . hinject' $ ELaplaceF w c'
 
 fvXExprF ::
   FreshM m =>
@@ -624,7 +642,9 @@ fvXExprF (XELamF f) = K $ do
 fvXExprF (XEAppF (unK -> a) (unK -> b)) =
   K $ S.union <$> a <*> b
 
-namedXExprFM :: forall a m. (MonadThrowWithStack m, FreshM m) =>
+namedXExprFM ::
+  forall a m.
+  (MonadThrowWithStack m, FreshM m) =>
   XExprF (K (m AnyNCPSFuzz)) a ->
   K (m AnyNCPSFuzz) a
 namedXExprFM (XEVarF x) = K . return . AnyNCPSFuzz . wrap . hinject' $ EVarF (Var @a x)
@@ -635,16 +655,17 @@ namedXExprFM (XELamF (f :: Name s (_ a1) -> _ b)) = K $ do
   case f' of
     AnyNCPSFuzz (f' :: _ b') ->
       withHRefl @b @b' $ \HRefl ->
-      return . AnyNCPSFuzz . wrap . hinject' $ ELamF var f'
+        return . AnyNCPSFuzz . wrap . hinject' $ ELamF var f'
 namedXExprFM (XEAppF ((unK -> a) :: _ (a1 -> a)) ((unK -> b) :: _ a1)) = K $ do
   a' <- a
   b' <- b
   case (a', b') of
-    (AnyNCPSFuzz (a' :: _ a1_arrow_a),
-     AnyNCPSFuzz (b' :: _ a1')) ->
-      withHRefl @(a1 -> a) @a1_arrow_a $ \HRefl ->
-      withHRefl @a1 @a1' $ \HRefl ->
-      return . AnyNCPSFuzz . wrap . hinject' $ EAppF a' b'
+    ( AnyNCPSFuzz (a' :: _ a1_arrow_a),
+      AnyNCPSFuzz (b' :: _ a1')
+      ) ->
+        withHRefl @(a1 -> a) @a1_arrow_a $ \HRefl ->
+          withHRefl @a1 @a1' $ \HRefl ->
+            return . AnyNCPSFuzz . wrap . hinject' $ EAppF a' b'
 
 fvControlF ::
   ControlF (K (S.Set String)) a ->
@@ -668,13 +689,14 @@ namedControlFM (CIfF (unK -> cond) (unK -> a) (unK -> b)) = K $ do
   a' <- a
   b' <- b
   case (cond', a', b') of
-    (AnyNCPSFuzz (cond' :: _ bool),
-     AnyNCPSFuzz (a' :: _ a'),
-     AnyNCPSFuzz (b' :: _ b')) ->
-      withHRefl @Bool @bool $ \HRefl ->
-      withHRefl @a @a' $ \HRefl ->
-      withHRefl @a @b' $ \HRefl ->
-      return . AnyNCPSFuzz . wrap . hinject' $ CIfF cond' a' b'
+    ( AnyNCPSFuzz (cond' :: _ bool),
+      AnyNCPSFuzz (a' :: _ a'),
+      AnyNCPSFuzz (b' :: _ b')
+      ) ->
+        withHRefl @Bool @bool $ \HRefl ->
+          withHRefl @a @a' $ \HRefl ->
+            withHRefl @a @b' $ \HRefl ->
+              return . AnyNCPSFuzz . wrap . hinject' $ CIfF cond' a' b'
 
 fvPrimF ::
   PrimF (K (S.Set String)) a ->
@@ -731,7 +753,8 @@ fvPrimFM (PPairF (unK -> a) (unK -> b)) = K $ S.union <$> a <*> b
 fvPrimFM (PFstF (unK -> a)) = K a
 fvPrimFM (PSndF (unK -> a)) = K a
 
-namedPrimFMBinop :: forall (c :: * -> Constraint) i o m.
+namedPrimFMBinop ::
+  forall (c :: * -> Constraint) i o m.
   (MonadThrowWithStack m, FreshM m, Typeable i, Typeable o, c i) =>
   m AnyNCPSFuzz ->
   m AnyNCPSFuzz ->
@@ -741,13 +764,15 @@ namedPrimFMBinop a b comb = do
   a' <- a
   b' <- b
   case (a', b') of
-    (AnyNCPSFuzz (a' :: _ a),
-     AnyNCPSFuzz (b' :: _ b)) ->
-      withHRefl @i @a $ \HRefl ->
-      withHRefl @i @b $ \HRefl ->
-      return . AnyNCPSFuzz $ comb a' b'
+    ( AnyNCPSFuzz (a' :: _ a),
+      AnyNCPSFuzz (b' :: _ b)
+      ) ->
+        withHRefl @i @a $ \HRefl ->
+          withHRefl @i @b $ \HRefl ->
+            return . AnyNCPSFuzz $ comb a' b'
 
-namedPrimFMBinop2 :: forall (c :: * -> Constraint) i1 i2 o m.
+namedPrimFMBinop2 ::
+  forall (c :: * -> Constraint) i1 i2 o m.
   (MonadThrowWithStack m, FreshM m, Typeable i1, Typeable i2, Typeable o, c i1, c i2) =>
   m AnyNCPSFuzz ->
   m AnyNCPSFuzz ->
@@ -757,13 +782,15 @@ namedPrimFMBinop2 a b comb = do
   a' <- a
   b' <- b
   case (a', b') of
-    (AnyNCPSFuzz (a' :: _ a),
-     AnyNCPSFuzz (b' :: _ b)) ->
-      withHRefl @i1 @a $ \HRefl ->
-      withHRefl @i2 @b $ \HRefl ->
-      return . AnyNCPSFuzz $ comb a' b'
+    ( AnyNCPSFuzz (a' :: _ a),
+      AnyNCPSFuzz (b' :: _ b)
+      ) ->
+        withHRefl @i1 @a $ \HRefl ->
+          withHRefl @i2 @b $ \HRefl ->
+            return . AnyNCPSFuzz $ comb a' b'
 
-namedPrimFMUnop :: forall (c :: * -> Constraint) i o m.
+namedPrimFMUnop ::
+  forall (c :: * -> Constraint) i o m.
   (MonadThrowWithStack m, FreshM m, Typeable i, Typeable o, c i) =>
   m AnyNCPSFuzz ->
   (HFix NCPSFuzzF i -> HFix NCPSFuzzF o) ->
@@ -773,7 +800,7 @@ namedPrimFMUnop a comb = do
   case a' of
     AnyNCPSFuzz (a' :: _ a) ->
       withHRefl @i @a $ \HRefl ->
-      return . AnyNCPSFuzz $ comb a'
+        return . AnyNCPSFuzz $ comb a'
 
 namedPrimFM ::
   forall a m.
@@ -781,56 +808,89 @@ namedPrimFM ::
   PrimF (K (m AnyNCPSFuzz)) a ->
   K (m AnyNCPSFuzz) a
 namedPrimFM (PLitF x) = K . return . AnyNCPSFuzz . wrap . hinject' $ PLitF x
-namedPrimFM (PAddF (unK -> a) (unK -> b)) = K $
-  namedPrimFMBinop @Num @a a b $ \a b -> wrap . hinject' $ PAddF a b
-namedPrimFM (PSubF (unK -> a) (unK -> b)) = K $
-  namedPrimFMBinop @Num @a a b $ \a b -> wrap . hinject' $ PSubF a b
-namedPrimFM (PMultF (unK -> a) (unK -> b)) = K $
-  namedPrimFMBinop @Num @a a b $ \a b -> wrap . hinject' $ PMultF a b
-namedPrimFM (PDivF (unK -> a) (unK -> b)) = K $
-  namedPrimFMBinop @Fractional @a a b $ \a b -> wrap . hinject' $ PDivF a b
-namedPrimFM (PAbsF (unK -> a)) = K $
-  namedPrimFMUnop @Num @a a $ wrap . hinject' . PAbsF
-namedPrimFM (PSignumF (unK -> a)) = K $
-  namedPrimFMUnop @Num @a a $ wrap . hinject' . PSignumF
-namedPrimFM (PExpF (unK -> a)) = K $
-  namedPrimFMUnop @Floating @a a $ wrap . hinject' . PExpF
-namedPrimFM (PSqrtF (unK -> a)) = K $
-  namedPrimFMUnop @Floating @a a $ wrap . hinject' . PSqrtF
-namedPrimFM (PLogF (unK -> a)) = K $
-  namedPrimFMUnop @Floating @a a $ wrap . hinject' . PLogF
-namedPrimFM (PGTF ((unK -> a) :: _ p) (unK -> b)) = K $
-  namedPrimFMBinop @Ord @p a b $ \a b -> wrap . hinject' $ PGTF a b
-namedPrimFM (PGEF ((unK -> a) :: _ p) (unK -> b)) = K $
-  namedPrimFMBinop @Ord @p a b $ \a b -> wrap . hinject' $ PGEF a b
-namedPrimFM (PLTF ((unK -> a) :: _ p) (unK -> b)) = K $
-  namedPrimFMBinop @Ord @p a b $ \a b -> wrap . hinject' $ PLTF a b
-namedPrimFM (PLEF ((unK -> a) :: _ p) (unK -> b)) = K $
-  namedPrimFMBinop @Ord @p a b $ \a b -> wrap . hinject' $ PLEF a b
-namedPrimFM (PEQF ((unK -> a) :: _ p) (unK -> b)) = K $
-  namedPrimFMBinop @Ord @p a b $ \a b -> wrap . hinject' $ PEQF a b
-namedPrimFM (PNEQF ((unK -> a) :: _ p) (unK -> b)) = K $
-  namedPrimFMBinop @Ord @p a b $ \a b -> wrap . hinject' $ PNEQF a b
-namedPrimFM (PJustF ((unK -> a) :: _ p)) = K $
-  namedPrimFMUnop @Typeable @p a $ wrap . hinject' . PJustF
+namedPrimFM (PAddF (unK -> a) (unK -> b)) = K
+  $ namedPrimFMBinop @Num @a a b
+  $ \a b -> wrap . hinject' $ PAddF a b
+namedPrimFM (PSubF (unK -> a) (unK -> b)) = K
+  $ namedPrimFMBinop @Num @a a b
+  $ \a b -> wrap . hinject' $ PSubF a b
+namedPrimFM (PMultF (unK -> a) (unK -> b)) = K
+  $ namedPrimFMBinop @Num @a a b
+  $ \a b -> wrap . hinject' $ PMultF a b
+namedPrimFM (PDivF (unK -> a) (unK -> b)) = K
+  $ namedPrimFMBinop @Fractional @a a b
+  $ \a b -> wrap . hinject' $ PDivF a b
+namedPrimFM (PAbsF (unK -> a)) =
+  K
+    $ namedPrimFMUnop @Num @a a
+    $ wrap . hinject' . PAbsF
+namedPrimFM (PSignumF (unK -> a)) =
+  K
+    $ namedPrimFMUnop @Num @a a
+    $ wrap . hinject' . PSignumF
+namedPrimFM (PExpF (unK -> a)) =
+  K
+    $ namedPrimFMUnop @Floating @a a
+    $ wrap . hinject' . PExpF
+namedPrimFM (PSqrtF (unK -> a)) =
+  K
+    $ namedPrimFMUnop @Floating @a a
+    $ wrap . hinject' . PSqrtF
+namedPrimFM (PLogF (unK -> a)) =
+  K
+    $ namedPrimFMUnop @Floating @a a
+    $ wrap . hinject' . PLogF
+namedPrimFM (PGTF ((unK -> a) :: _ p) (unK -> b)) = K
+  $ namedPrimFMBinop @Ord @p a b
+  $ \a b -> wrap . hinject' $ PGTF a b
+namedPrimFM (PGEF ((unK -> a) :: _ p) (unK -> b)) = K
+  $ namedPrimFMBinop @Ord @p a b
+  $ \a b -> wrap . hinject' $ PGEF a b
+namedPrimFM (PLTF ((unK -> a) :: _ p) (unK -> b)) = K
+  $ namedPrimFMBinop @Ord @p a b
+  $ \a b -> wrap . hinject' $ PLTF a b
+namedPrimFM (PLEF ((unK -> a) :: _ p) (unK -> b)) = K
+  $ namedPrimFMBinop @Ord @p a b
+  $ \a b -> wrap . hinject' $ PLEF a b
+namedPrimFM (PEQF ((unK -> a) :: _ p) (unK -> b)) = K
+  $ namedPrimFMBinop @Ord @p a b
+  $ \a b -> wrap . hinject' $ PEQF a b
+namedPrimFM (PNEQF ((unK -> a) :: _ p) (unK -> b)) = K
+  $ namedPrimFMBinop @Ord @p a b
+  $ \a b -> wrap . hinject' $ PNEQF a b
+namedPrimFM (PJustF ((unK -> a) :: _ p)) =
+  K
+    $ namedPrimFMUnop @Typeable @p a
+    $ wrap . hinject' . PJustF
 namedPrimFM PNothingF = K . return . AnyNCPSFuzz @a . wrap . hinject' $ PNothingF
-namedPrimFM (PFromJustF ((unK -> a) :: _ (Maybe p))) = K $
-  namedPrimFMUnop @Typeable @(Maybe p) @p a $ wrap . hinject' . PFromJustF
-namedPrimFM (PIsJustF ((unK -> a) :: _ (Maybe p))) = K $
-  namedPrimFMUnop @Typeable @(Maybe p) a $ wrap . hinject' . PIsJustF
-namedPrimFM (PPairF ((unK -> a) :: _ p1) ((unK -> b) :: _ p2)) = K $
-  namedPrimFMBinop2 @Typeable @p1 @p2 a b $ \a b -> wrap . hinject' $ PPairF a b
-namedPrimFM (PFstF ((unK -> a) :: _ (p1, p2))) = K $
-  namedPrimFMUnop @Typeable @(p1, p2) a $ wrap . hinject' . PFstF
-namedPrimFM (PSndF ((unK -> a) :: _ (p1, p2))) = K $
-  namedPrimFMUnop @Typeable @(p1, p2) a $ wrap . hinject' . PSndF
+namedPrimFM (PFromJustF ((unK -> a) :: _ (Maybe p))) =
+  K
+    $ namedPrimFMUnop @Typeable @(Maybe p) @p a
+    $ wrap . hinject' . PFromJustF
+namedPrimFM (PIsJustF ((unK -> a) :: _ (Maybe p))) =
+  K
+    $ namedPrimFMUnop @Typeable @(Maybe p) a
+    $ wrap . hinject' . PIsJustF
+namedPrimFM (PPairF ((unK -> a) :: _ p1) ((unK -> b) :: _ p2)) = K
+  $ namedPrimFMBinop2 @Typeable @p1 @p2 a b
+  $ \a b -> wrap . hinject' $ PPairF a b
+namedPrimFM (PFstF ((unK -> a) :: _ (p1, p2))) =
+  K
+    $ namedPrimFMUnop @Typeable @(p1, p2) a
+    $ wrap . hinject' . PFstF
+namedPrimFM (PSndF ((unK -> a) :: _ (p1, p2))) =
+  K
+    $ namedPrimFMUnop @Typeable @(p1, p2) a
+    $ wrap . hinject' . PSndF
 
-fvCPSFuzzF :: FreshM m =>
+fvCPSFuzzF ::
+  FreshM m =>
   CPSFuzzF (K (m (S.Set String))) a ->
   K (m (S.Set String)) a
 fvCPSFuzzF = fvBagOpFM `sumAlg` fvXExprMonadF `sumAlg` fvXExprF `sumAlg` fvControlFM `sumAlg` fvPrimFM
 
-namedF :: (MonadThrowWithStack m, FreshM m) =>
+namedF ::
+  (MonadThrowWithStack m, FreshM m) =>
   CPSFuzzF (K (m AnyNCPSFuzz)) a ->
   K (m AnyNCPSFuzz) a
 namedF = namedBagOpFM `sumAlg` namedXExprMonadFM `sumAlg` namedXExprFM `sumAlg` namedControlFM `sumAlg` namedPrimFM
@@ -838,7 +898,9 @@ namedF = namedBagOpFM `sumAlg` namedXExprMonadFM `sumAlg` namedXExprFM `sumAlg` 
 fvCPSFuzz :: (forall f. CPSFuzz f a) -> S.Set String
 fvCPSFuzz = flip evalState emptyNameState . unK . hxcata fvCPSFuzzF
 
-named' :: forall a m. (Typeable a, FreshM m, MonadThrowWithStack m) =>
+named' ::
+  forall a m.
+  (Typeable a, FreshM m, MonadThrowWithStack m) =>
   (forall f. CPSFuzz f a) ->
   m (HFix NCPSFuzzF a)
 named' term = do
@@ -846,11 +908,12 @@ named' term = do
   case term' of
     AnyNCPSFuzz (term' :: _ a') ->
       withHRefl @a @a' $ \HRefl ->
-      return term'
+        return term'
 
 namedEither :: Typeable a => (forall f. CPSFuzz f a) -> Either SomeException (HFix NCPSFuzzF a)
 namedEither term = flip evalStateT names $ named' term
-  where names = nameState $ fvCPSFuzz term
+  where
+    names = nameState $ fvCPSFuzz term
 
 -- ##################
 -- # INFRASTRUCTURE #
