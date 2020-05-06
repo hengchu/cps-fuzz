@@ -353,7 +353,7 @@ type MainF = ExprMonadF :+: ExprF :+: ControlF :+: PrimF
 -- because everything is first-order.
 type NCPSFuzzF = BagOpF :+: MainF
 
-type NRedZoneF = BagOpF :+: ExprF :+: ControlF :+: PrimF
+type NRedZoneF = ExprF :+: ControlF :+: PrimF
 
 -- | Morally the same type as NCPSFuzzF, but guaranteed that all input databases
 -- are variable names. This lifts all of the bag operations up so that all of
@@ -1101,6 +1101,9 @@ substF v u =
     recurse :: HInject h NCPSFuzzF => h (HFix NCPSFuzzF) a -> HFix NCPSFuzzF a
     recurse = wrap . hinject'
 
+-- TODO: this is actually wrong... other bag operations also need to be
+-- considered, because their continuations could capture and return bags from
+-- outer operations.
 flattenF :: forall rest h h' a m.
   (HInject BagOpF h,
    HInject ExprF h',
@@ -1255,15 +1258,13 @@ instance HInject PrimF (a :+: b :+: c :+: d :+: PrimF) where
   hproject' _ = Nothing
 
 instance HInject NRedZoneF NCPSFuzzF where
-  hinject' (Inl bagOp) = Inl bagOp
-  hinject' (Inr (Inl expr)) = Inr (Inr (Inl expr))
-  hinject' (Inr (Inr (Inl ctrl))) = Inr (Inr (Inr (Inl ctrl)))
-  hinject' (Inr (Inr (Inr prim))) = Inr (Inr (Inr (Inr prim)))
+  hinject' (Inl expr) = Inr (Inr (Inl expr))
+  hinject' (Inr (Inl ctrl)) = Inr (Inr (Inr (Inl ctrl)))
+  hinject' (Inr (Inr prim)) = Inr (Inr (Inr (Inr prim)))
 
-  hproject' (Inl bagOp) = Just (Inl bagOp)
-  hproject' (Inr (Inr (Inl expr))) = Just (Inr (Inl expr))
-  hproject' (Inr (Inr (Inr (Inl ctrl)))) = Just (Inr (Inr (Inl ctrl)))
-  hproject' (Inr (Inr (Inr (Inr prim)))) = Just (Inr (Inr (Inr prim)))
+  hproject' (Inr (Inr (Inl expr))) = Just (Inl expr)
+  hproject' (Inr (Inr (Inr (Inl ctrl)))) = Just (Inr (Inl ctrl))
+  hproject' (Inr (Inr (Inr (Inr prim)))) = Just (Inr (Inr prim))
   hproject' _ = Nothing
 
 instance HInject MainF (a :+: MainF) where
