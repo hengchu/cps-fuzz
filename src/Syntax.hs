@@ -312,7 +312,9 @@ type CPSFuzzF = BagOpF :+: XExprMonadF :+: XExprF :+: ControlF :+: PrimF
 
 -- | CPSFuzz, but with explicit names. This is easier for compilers to handle
 -- because everything is first-order.
-type NCPSFuzzF = BagOpF :+: ExprMonadF :+: ExprF :+: ControlF :+: PrimF
+type NCPSFuzzF    = BagOpF :+: ExprMonadF :+: ExprF :+: ControlF :+: PrimF
+type NRedZoneF    = BagOpF :+:                ExprF :+: ControlF :+: PrimF
+type NNormalizedF =            ExprMonadF :+: ExprF :+: ControlF :+: PrimF
 
 type CPSFuzz f = HXFix CPSFuzzF f
 
@@ -887,13 +889,23 @@ fvCPSFuzzF ::
   FreshM m =>
   CPSFuzzF (K (m (S.Set String))) a ->
   K (m (S.Set String)) a
-fvCPSFuzzF = fvBagOpFM `sumAlg` fvXExprMonadF `sumAlg` fvXExprF `sumAlg` fvControlFM `sumAlg` fvPrimFM
+fvCPSFuzzF =
+  fvBagOpFM
+  `sumAlg` fvXExprMonadF
+  `sumAlg` fvXExprF
+  `sumAlg` fvControlFM
+  `sumAlg` fvPrimFM
 
 namedF ::
   (MonadThrowWithStack m, FreshM m) =>
   CPSFuzzF (K (m AnyNCPSFuzz)) a ->
   K (m AnyNCPSFuzz) a
-namedF = namedBagOpFM `sumAlg` namedXExprMonadFM `sumAlg` namedXExprFM `sumAlg` namedControlFM `sumAlg` namedPrimFM
+namedF =
+  namedBagOpFM
+  `sumAlg` namedXExprMonadFM
+  `sumAlg` namedXExprFM
+  `sumAlg` namedControlFM
+  `sumAlg` namedPrimFM
 
 fvCPSFuzz :: (forall f. CPSFuzz f a) -> S.Set String
 fvCPSFuzz = flip evalState emptyNameState . unK . hxcata fvCPSFuzzF
@@ -914,6 +926,81 @@ namedEither :: Typeable a => (forall f. CPSFuzz f a) -> Either SomeException (HF
 namedEither term = flip evalStateT names $ named' term
   where
     names = nameState $ fvCPSFuzz term
+
+-- | Open up a lambda, giving access to its bound variable and the lambda's
+-- body. Uses the actual bound variable when possible, otherwise generates a
+-- fresh name from the name hint.
+openM ::
+  (FreshM m,
+   HTraversable h,
+   HInject ExprF h,
+   Typeable a,
+   Typeable b) =>
+  String ->
+  HFix h (a -> b) ->
+  m (Var a, HFix h b)
+openM _        (fmap unwrap . project' @ExprF -> Just (ELamF bound body)) = return (bound, inject' body)
+openM nameHint a = do
+  x <- gfresh nameHint
+  let v = Var x
+  return (v, wrap . hinject' $ EAppF a (wrap . hinject' . EVarF $ v))
+
+-- | Swap two names throughout the expression.
+swapExprF :: HInject ExprF h => String -> String -> ExprF (HFix h) a -> HFix h a
+swapExprF var1 var2 (EVarF (Var x)) =
+  case (var1 == x, var2 == x) of
+    (True, _) -> wrap . hinject' $ EVarF (Var var2)
+    (_, True) -> wrap . hinject' $ EVarF (Var var1)
+    _         -> wrap . hinject' $ EVarF (Var x)
+swapExprF var1 var2 (ELamF (Var x) body) =
+  case (var1 == x, var2 == x) of
+    (True, _) -> wrap . hinject' $ ELamF (Var var2) body
+    (_, True) -> wrap . hinject' $ ELamF (Var var1) body
+    _         -> wrap . hinject' $ ELamF (Var x) body
+swapExprF _    _    app = wrap . hinject' $ app
+
+swapExprMonadF :: HInject ExprMonadF h => String -> String -> ExprMonadF (HFix h) a -> HFix h a
+swapExprMonadF var1 var2 (EBindF m (Var x) f) =
+  case (var1 == x, var2 == x) of
+    (True, _) -> wrap . hinject' $ EBindF m (Var var2) f
+    (_, True) -> wrap . hinject' $ EBindF m (Var var1) f
+    _         -> wrap . hinject' $ EBindF m (Var x) f
+swapExprMonadF _    _    term = wrap . hinject' $ term
+
+swapF :: String -> String -> NCPSFuzzF (HFix NCPSFuzzF) a -> HFix NCPSFuzzF a
+swapF var1 var2 =
+  recurse
+  `sumAlg` swapExprMonadF var1 var2
+  `sumAlg` swapExprF      var1 var2
+  `sumAlg` recurse
+  `sumAlg` recurse
+  where
+    recurse :: HInject h NCPSFuzzF => h (HFix NCPSFuzzF) a -> HFix NCPSFuzzF a
+    recurse = wrap . hinject'
+
+-- | Simple substitution that may capture.
+substExprF :: forall a b h.
+  (Typeable a, HInject ExprF h) =>
+  Var a -> HFix h a -> ExprF (HFix h) b -> HFix h b
+substExprF (Var x) u (EVarF (Var x')) =
+  if x == x'
+  then case eqTypeRep (typeRep @a) (typeRep @b) of
+    Just HRefl -> u
+    _ -> wrap . hinject' $ EVarF (Var x')
+  else wrap . hinject' $ EVarF (Var x')
+substExprF _       _ t = wrap . hinject' $ t
+
+substF :: Typeable a =>
+  Var a -> HFix NCPSFuzzF a -> NCPSFuzzF (HFix NCPSFuzzF) b -> HFix NCPSFuzzF b
+substF v u =
+  recurse
+  `sumAlg` recurse
+  `sumAlg` substExprF v u
+  `sumAlg` recurse
+  `sumAlg` recurse
+  where
+    recurse :: HInject h NCPSFuzzF => h (HFix NCPSFuzzF) a -> HFix NCPSFuzzF a
+    recurse = wrap . hinject'
 
 -- ##################
 -- # INFRASTRUCTURE #
@@ -1007,6 +1094,30 @@ instance HInject PrimF (a :+: b :+: c :+: d :+: PrimF) where
   hinject' = Inr . Inr . Inr . Inr
   hproject' (Inr (Inr (Inr (Inr a)))) = Just a
   hproject' _ = Nothing
+
+instance HInject NRedZoneF NCPSFuzzF where
+  hinject' (Inl bagOp) = Inl bagOp
+  hinject' (Inr (Inl expr)) = Inr (Inr (Inl expr))
+  hinject' (Inr (Inr (Inl ctrl))) = Inr (Inr (Inr (Inl ctrl)))
+  hinject' (Inr (Inr (Inr prim))) = Inr (Inr (Inr (Inr prim)))
+
+  hproject' (Inl bagOp) = Just (Inl bagOp)
+  hproject' (Inr (Inr (Inl expr))) = Just (Inr (Inl expr))
+  hproject' (Inr (Inr (Inr (Inl ctrl)))) = Just (Inr (Inr (Inl ctrl)))
+  hproject' (Inr (Inr (Inr (Inr prim)))) = Just (Inr (Inr (Inr prim)))
+  hproject' _                            = Nothing
+
+instance HInject NNormalizedF NCPSFuzzF where
+  hinject' (Inl exprM) = Inr (Inl exprM)
+  hinject' (Inr (Inl expr)) = Inr (Inr (Inl expr))
+  hinject' (Inr (Inr (Inl ctrl))) = Inr (Inr (Inr (Inl ctrl)))
+  hinject' (Inr (Inr (Inr prim))) = Inr (Inr (Inr (Inr prim)))
+
+  hproject' (Inr (Inl exprM)) = Just (Inl exprM)
+  hproject' (Inr (Inr (Inl expr))) = Just (Inr (Inl expr))
+  hproject' (Inr (Inr (Inr (Inl ctrl)))) = Just (Inr (Inr (Inl ctrl)))
+  hproject' (Inr (Inr (Inr (Inr prim)))) = Just (Inr (Inr (Inr prim)))
+  hproject' _                            = Nothing
 
 -- ####################
 -- # Lenses to expose #

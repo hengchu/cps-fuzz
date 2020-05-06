@@ -10,7 +10,7 @@ newtype DeriveHInjectTrans h j l r a = DeriveHInjectTrans (h r a)
 -- | This is right-associative so we can pattern match on the first type
 -- parameter in typeclass instances.
 infixr 6 :+:
-
+infixr 7 :*:, :*
 infixr 9 :.:
 
 type h :.: j = HComp h j
@@ -20,9 +20,24 @@ newtype HComp h j r a where
 
 data
   (f :: (* -> *) -> * -> *)
-    :+: (g :: (* -> *) -> * -> *) :: (* -> *) -> * -> * where
+  :+: (g :: (* -> *) -> * -> *) :: (* -> *) -> * -> * where
   Inl :: f r a -> (f :+: g) r a
   Inr :: g r a -> (f :+: g) r a
+
+data
+  (f :: (* -> *) -> * -> *)
+  :*: (g :: (* -> *) -> * -> *) :: (* -> *) -> * -> * where
+  HProd :: f r a -> g r a -> (f :*: g) r a
+
+data
+  (f :: * -> *) :* (g :: * -> *) :: * -> * where
+  Prod :: f a -> g a -> (f :* g) a
+
+prj1 :: (f :* g) a -> f a
+prj1 (Prod a _) = a
+
+prj2 :: (f :* g) a -> g a
+prj2 (Prod _ b) = b
 
 unK :: K a b -> a
 unK (K a) = a
@@ -81,6 +96,7 @@ instance HFunctor h => HXFunctor (DeriveHXFunctor h) where
   hxmap f _ (DeriveHXFunctor term) = DeriveHXFunctor $ hmap f term
 
 infixr 6 `sumAlg`
+infixr 7 `prodAlg`
 
 -- | Takes 2 algebras and lift them to an algebra on the sum type.
 sumAlg ::
@@ -89,6 +105,14 @@ sumAlg ::
   (forall a. (h :+: j) f a -> f a)
 sumAlg alg1 _ (Inl a) = alg1 a
 sumAlg _ alg2 (Inr a) = alg2 a
+
+prodAlg :: HFunctor h =>
+  (forall a. h f a -> f a) ->
+  (forall a. h g a -> g a) ->
+  (forall a. h (f :* g) a -> (f :* g) a)
+prodAlg alg1 alg2 a = Prod (alg1 af) (alg2 ag)
+  where af = hmap prj1 a
+        ag = hmap prj2 a
 
 sumAlgConst ::
   HInject h j =>
@@ -112,13 +136,19 @@ xwrap = HXFix
 wrap :: h (HFix h) a -> HFix h a
 wrap = HFix
 
+unwrap :: HFix h a -> h (HFix h) a
+unwrap (HFix a) = a
+
 xplace :: f a -> HXFix h f a
 xplace = Place
 
--- | Relax a fixpoint into a fixpoint potentially with holes in it. This allows
--- us to fold over the structure with catamorphism.
-relax :: HFunctor h => HFix h a -> HXFix h f a
+-- | Relax a fixpoint into a fixpoint potentially with holes in it.
+relax :: HFunctor h => HFix h a -> (forall f. HXFix h f a)
 relax (HFix term) = HXFix . (hmap relax) $ term
+
+-- | Stricten a fixpoined into one without holes.
+contract :: HFunctor h => (forall f. HXFix h f a) -> HFix h a
+contract = hcata wrap
 
 -- | Catamorphism over a functor-functor. But wait a second, can't we just
 -- instantiate `f` with some monad? I guess that's OK... If `a` is a monadic
@@ -183,7 +213,7 @@ inject' ::
   HFix j a
 inject' = hcata' (wrap . hinject')
 
-hproject ::
+project' ::
   forall h j a.
   ( HFunctor j,
     HTraversable h,
@@ -191,7 +221,7 @@ hproject ::
   ) =>
   HFix j a ->
   Maybe (HFix h a)
-hproject =
+project' =
   hcataM' (fmap wrap . unMaybeHomM)
     . hcata' (wrap . prj . hproject')
   where
@@ -255,6 +285,11 @@ instance (HFunctor f, HFunctor g) => HFunctor (f :.: g) where
     \case
       HComp a -> HComp (hmap (hmap f) a)
 
+instance (HXFunctor f, HXFunctor g) => HXFunctor (f :.: g) where
+  hxmap f g =
+    \case
+      HComp a -> HComp (hxmap (hxmap f g) (hxmap g f) a)
+
 instance (HFoldable f, HFoldable g) => HFoldable (f :.: g) where
   hfoldMap f =
     \case
@@ -288,6 +323,26 @@ instance (HTraversable f, HTraversable g) => HTraversable (f :+: g) where
     \case
       Inl left -> Inl <$> htraverse f left
       Inr right -> Inr <$> htraverse f right
+
+instance (HFunctor f, HFunctor g) => HFunctor (f :*: g) where
+  hmap f =
+    \case
+      HProd a b -> HProd (hmap f a) (hmap f b)
+
+instance (HXFunctor f, HXFunctor g) => HXFunctor (f :*: g) where
+  hxmap f g =
+    \case
+      HProd a b -> HProd (hxmap f g a) (hxmap f g b)
+
+instance (HFoldable f, HFoldable g) => HFoldable (f :*: g) where
+  hfoldMap f =
+    \case
+      HProd a b -> (hfoldMap f a) <> (hfoldMap f b)
+
+instance (HTraversable f, HTraversable g) => HTraversable (f :*: g) where
+  htraverse f =
+    \case
+      HProd a b -> HProd <$> htraverse f a <*> htraverse f b
 
 instance (HInject h j, HInject j l) => HInject (DeriveHInjectTrans h j l) l where
   hinject' (DeriveHInjectTrans a) = hinject' @j @l . hinject' @h @j $ a
