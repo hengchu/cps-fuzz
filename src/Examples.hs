@@ -30,6 +30,12 @@ example4 = toDeepRepr $ \(N w :: Name "w" (CPSFuzz f Number)) -> do
   ($(named "noised2")) <- lap 2.0 w
   return $ noised + noised2
 
+example5 :: forall f. CPSFuzz f (Bag Number -> Number)
+example5 = toDeepRepr @(CPSFuzz f) (\(N db :: Name "db" (CPSFuzz f _)) -> bag_filter_sum db)
+
+example6 :: forall f. CPSFuzz f (Bag Number -> Number)
+example6 = toDeepRepr @(CPSFuzz f) (\(N db :: Name "db" (CPSFuzz f _)) -> needs_flatten db)
+
 bag_filter_sum :: CPSFuzz f (Bag Number) -> CPSFuzz f Number
 bag_filter_sum db =
   bfilter gt_10 db $
@@ -44,6 +50,13 @@ bag_filter_sum db =
     gt_10 (N v) = v %> 10
     lt_5 :: Name "row" (CPSFuzz f Number) -> CPSFuzz f Bool
     lt_5 (N v) = v %< 5
+
+needs_flatten :: CPSFuzz f (Bag Number) -> CPSFuzz f Number
+needs_flatten db =
+  bag_filter_sum (bmap plus_1 db $ \($(named "r")) -> r)
+  where
+    plus_1 :: Name "row" (CPSFuzz f Number) -> CPSFuzz f Number
+    plus_1 (N v) = v+1
 
 bag_filter_sum_noise :: forall f. CPSFuzz f (Bag Number) -> CPSFuzz f (Distr Number)
 bag_filter_sum_noise db =
