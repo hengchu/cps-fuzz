@@ -10,7 +10,9 @@ newtype DeriveHInjectTrans h j l r a = DeriveHInjectTrans (h r a)
 -- | This is right-associative so we can pattern match on the first type
 -- parameter in typeclass instances.
 infixr 6 :+:
+
 infixr 7 :*:, :*
+
 infixr 9 :.:
 
 type h :.: j = HComp h j
@@ -20,17 +22,16 @@ newtype HComp h j r a where
 
 data
   (f :: (* -> *) -> * -> *)
-  :+: (g :: (* -> *) -> * -> *) :: (* -> *) -> * -> * where
+    :+: (g :: (* -> *) -> * -> *) :: (* -> *) -> * -> * where
   Inl :: f r a -> (f :+: g) r a
   Inr :: g r a -> (f :+: g) r a
 
 data
   (f :: (* -> *) -> * -> *)
-  :*: (g :: (* -> *) -> * -> *) :: (* -> *) -> * -> * where
+    :*: (g :: (* -> *) -> * -> *) :: (* -> *) -> * -> * where
   HProd :: f r a -> g r a -> (f :*: g) r a
 
-data
-  (f :: * -> *) :* (g :: * -> *) :: * -> * where
+data (f :: * -> *) :* (g :: * -> *) :: * -> * where
   Prod :: f a -> g a -> (f :* g) a
 
 prj1 :: (f :* g) a -> f a
@@ -96,6 +97,7 @@ instance HFunctor h => HXFunctor (DeriveHXFunctor h) where
   hxmap f _ (DeriveHXFunctor term) = DeriveHXFunctor $ hmap f term
 
 infixr 6 `sumAlg`
+
 infixr 7 `prodAlg`
 
 -- | Takes 2 algebras and lift them to an algebra on the sum type.
@@ -106,13 +108,47 @@ sumAlg ::
 sumAlg alg1 _ (Inl a) = alg1 a
 sumAlg _ alg2 (Inr a) = alg2 a
 
-prodAlg :: HFunctor h =>
+sumAlgM ::
+  (forall a. h f a -> m (f a)) ->
+  (forall a. j f a -> m (f a)) ->
+  (forall a. (h :+: j) f a -> m (f a))
+sumAlgM algM1 _ (Inl a) = algM1 a
+sumAlgM _ algM2 (Inr a) = algM2 a
+
+prodAlg ::
+  HFunctor h =>
   (forall a. h f a -> f a) ->
   (forall a. h g a -> g a) ->
   (forall a. h (f :* g) a -> (f :* g) a)
 prodAlg alg1 alg2 a = Prod (alg1 af) (alg2 ag)
-  where af = hmap prj1 a
-        ag = hmap prj2 a
+  where
+    af = hmap prj1 a
+    ag = hmap prj2 a
+
+prodAlgM ::
+  (HFunctor h, Applicative m) =>
+  (forall a. h f a -> m (f a)) ->
+  (forall a. h g a -> m (g a)) ->
+  (forall a. h (f :* g) a -> m ((f :* g) a))
+prodAlgM algM1 algM2 a = Prod <$> (algM1 af) <*> (algM2 ag)
+  where
+    af = hmap prj1 a
+    ag = hmap prj2 a
+
+prodAlgWithM ::
+  (HFunctor h, Monad m) =>
+  (forall a. h f a -> m (f a)) ->
+  (forall a. h g a -> m (g a)) ->
+  (forall a. f a -> g a -> m (r a)) ->
+  (forall a. h (f :* g) a -> m (r a))
+prodAlgWithM algM1 algM2 f a = do
+  fa <- algM1 af
+  ga <- algM2 ag
+  f fa ga
+  where
+    af = hmap prj1 a
+    ag = hmap prj2 a
+
 
 sumAlgConst ::
   HInject h j =>
