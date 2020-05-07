@@ -7,20 +7,21 @@ module Syntax where
 import Control.Lens
 import Control.Monad.Catch
 import Control.Monad.State.Strict
+--import Text.PrettyPrint.ANSI.Leijen hiding ((<$>))
+
+import Data.Constraint
 import Data.Functor.Compose
 import Data.Kind
 import Data.Proxy
 import qualified Data.Set as S
+import Debug.Trace
 import GHC.Stack
 import GHC.TypeLits
 import HFunctor
 import qualified Language.Haskell.TH as TH
 import Names
---import Text.PrettyPrint.ANSI.Leijen hiding ((<$>))
 import Text.Printf
 import Type.Reflection
-import Debug.Trace
-import Data.Constraint
 
 class VecStorable a where
   -- | How many dimensions does it take to store `a`?
@@ -190,7 +191,7 @@ data McsF :: (* -> *) -> * -> * where
     r (row -> sum) ->
     r (sum -> Distr Number) ->
     McsF r (Distr Number)
-  deriving HXFunctor via (DeriveHXFunctor McsF)
+  deriving (HXFunctor) via (DeriveHXFunctor McsF)
 
 instance HXFunctor XExprF where
   hxmap f g =
@@ -411,6 +412,7 @@ type MainF = ExprMonadF :+: ExprF :+: ControlF :+: PrimF
 type NCPSFuzzF = BagOpF :+: MainF
 
 type NRedZoneF = ExprF :+: ControlF :+: PrimF
+
 type NOrangeZoneF = ExprF :+: ControlF :+: PrimF
 
 -- | Morally the same type as NCPSFuzzF, but guaranteed that all input databases
@@ -568,17 +570,23 @@ sqrt = xwrap . hinject' . PSqrtF
 infixl 9 %@, `apply`
 
 (%@) ::
-  (Typeable a,
-   Typeable b,
-   HInject ExprF h
-  ) => HFix h (a -> b) -> HFix h a -> HFix h b
+  ( Typeable a,
+    Typeable b,
+    HInject ExprF h
+  ) =>
+  HFix h (a -> b) ->
+  HFix h a ->
+  HFix h b
 (%@) = apply
 
 apply ::
-  (Typeable a,
-   Typeable b,
-   HInject ExprF h
-  ) => HFix h (a -> b) -> HFix h a -> HFix h b
+  ( Typeable a,
+    Typeable b,
+    HInject ExprF h
+  ) =>
+  HFix h (a -> b) ->
+  HFix h a ->
+  HFix h b
 apply f arg = wrap . hinject' $ EAppF f arg
 
 compose ::
@@ -773,8 +781,9 @@ fvExprMonadF ::
   K (S.Set String) a
 fvExprMonadF (ELaplaceF _ (unK -> fvs)) = K fvs
 fvExprMonadF (EReturnF (unK -> fvs)) = K fvs
-fvExprMonadF (EBindF (unK -> fvs1) (Var bound) (unK -> fvs2)) = K $
-  fvs1 `S.union` S.delete bound fvs2
+fvExprMonadF (EBindF (unK -> fvs1) (Var bound) (unK -> fvs2)) =
+  K $
+    fvs1 `S.union` S.delete bound fvs2
 
 fvXExprMonadF ::
   FreshM m =>
@@ -1140,10 +1149,10 @@ close ::
   HFix h (a -> b)
 close var body = wrap . hinject' $ ELamF var body
 
-data Progress a =
-  Worked a
+data Progress a
+  = Worked a
   | Done a
-  deriving Functor
+  deriving (Functor)
 
 unprogress :: Progress a -> a
 unprogress (Worked a) = a
@@ -1162,8 +1171,8 @@ etaReduceF term@(hproject' -> Just (ELamF (bound :: _ a1) body)) =
           case eqTypeRep (typeRep @a1) (typeRep @a2) of
             Just HRefl ->
               if bound == somevar
-              then Worked $ unwrap f
-              else Done term
+                then Worked $ unwrap f
+                else Done term
             _ -> Done term
         _ -> Done term
     _ -> Done term
@@ -1199,8 +1208,9 @@ untilConvergence f a =
 
 etaBetaReduceStep ::
   forall h a.
-  (HInject ExprF h,
-   HFunctor h) =>
+  ( HInject ExprF h,
+    HFunctor h
+  ) =>
   HFix h a ->
   Progress (HFix h a)
 etaBetaReduceStep = getCompose . hcata' etaBetaReduceF
@@ -1208,16 +1218,18 @@ etaBetaReduceStep = getCompose . hcata' etaBetaReduceF
 -- | Eta-beta reduces until convergence.
 etaBetaReduce ::
   forall h a.
-  (HInject ExprF h,
-   HFunctor h) =>
+  ( HInject ExprF h,
+    HFunctor h
+  ) =>
   HFix h a ->
   HFix h a
 etaBetaReduce = untilConvergence etaBetaReduceStep
 
 monadReduceLeftF ::
   forall h a.
-  (HInject ExprMonadF h,
-   HInject ExprF h) =>
+  ( HInject ExprMonadF h,
+    HInject ExprF h
+  ) =>
   h (HFix h) a ->
   Progress (h (HFix h) a)
 monadReduceLeftF term@(hproject' -> Just (EBindF m bound f)) =
@@ -1228,8 +1240,9 @@ monadReduceLeftF term = Done term
 
 monadReduceRightF ::
   forall h a.
-  (HInject ExprMonadF h,
-   HInject ExprF h) =>
+  ( HInject ExprMonadF h,
+    HInject ExprF h
+  ) =>
   h (HFix h) a ->
   Progress (h (HFix h) a)
 monadReduceRightF term@(hproject' -> Just (EBindF m (bound :: _ a1) f)) =
@@ -1238,9 +1251,10 @@ monadReduceRightF term@(hproject' -> Just (EBindF m (bound :: _ a1) f)) =
       case hproject' . unwrap $ v of
         Just (EVarF (bound' :: _ a2)) ->
           case eqTypeRep (typeRep @a1) (typeRep @a2) of
-            Just HRefl -> if bound == bound'
-                          then Worked $ unwrap m
-                          else Done term
+            Just HRefl ->
+              if bound == bound'
+                then Worked $ unwrap m
+                else Done term
             _ -> Done term
         _ -> Done term
     _ -> Done term
@@ -1248,9 +1262,10 @@ monadReduceRightF term = Done term
 
 monadReduceF ::
   forall h a.
-  (HFunctor h,
-   HInject ExprMonadF h,
-   HInject ExprF h) =>
+  ( HFunctor h,
+    HInject ExprMonadF h,
+    HInject ExprF h
+  ) =>
   h (Compose Progress (HFix h)) a ->
   Compose Progress (HFix h) a
 monadReduceF term =
@@ -1260,18 +1275,20 @@ monadReduceF term =
 
 monadReduceStep ::
   forall h a.
-  (HFunctor h,
-   HInject ExprMonadF h,
-   HInject ExprF h) =>
+  ( HFunctor h,
+    HInject ExprMonadF h,
+    HInject ExprF h
+  ) =>
   HFix h a ->
   Progress (HFix h a)
 monadReduceStep = getCompose . hcata' monadReduceF
 
 monadReduce ::
   forall h a.
-  (HFunctor h,
-   HInject ExprMonadF h,
-   HInject ExprF h) =>
+  ( HFunctor h,
+    HInject ExprMonadF h,
+    HInject ExprF h
+  ) =>
   HFix h a ->
   HFix h a
 monadReduce = untilConvergence monadReduceStep
@@ -1383,11 +1400,12 @@ flattenF (hproject' -> Just (BMapF mapFun inputDb kont)) =
         -- A variable that represents the result of the upper bmap
         let var = Var result
         let newKont =
-              (wrap . hinject'
-               $ ELamF var
-               $ wrap . hinject'
-               $ FBMapF mapFun var kont
-              ) `compose` upperKont
+              ( wrap . hinject'
+                  $ ELamF var
+                  $ wrap . hinject'
+                  $ FBMapF mapFun var kont
+              )
+                `compose` upperKont
         return . wrap . hinject' $ FBMapF mf upperDb newKont
       _ -> throwM' UnFlattenableTerm
 flattenF (hproject' -> Just (BSumF clip inputDb kont)) =
@@ -1399,11 +1417,12 @@ flattenF (hproject' -> Just (BSumF clip inputDb kont)) =
         -- A variable that represents the result of the upper bmap
         let var = Var result
         let newKont =
-              (wrap . hinject'
-               $ ELamF var
-               $ wrap . hinject'
-               $ FBSumF clip var kont
-              ) `compose` upperKont
+              ( wrap . hinject'
+                  $ ELamF var
+                  $ wrap . hinject'
+                  $ FBSumF clip var kont
+              )
+                `compose` upperKont
         return . wrap . hinject' $ FBMapF mf upperDb newKont
       _ -> throwM' UnFlattenableTerm
 flattenF (hproject' @rest -> Just term) = return . wrap . hinject' $ term
@@ -1415,9 +1434,9 @@ flatten = hcataM' flattenF
 fvMainF :: MainF (K (S.Set String)) a -> K (S.Set String) a
 fvMainF =
   fvExprMonadF
-  `sumAlg` fvExprF
-  `sumAlg` fvControlF
-  `sumAlg` fvPrimF
+    `sumAlg` fvExprF
+    `sumAlg` fvControlF
+    `sumAlg` fvPrimF
 
 {-
 -- We don't actually need the full generality of SwapFun. Just build up a map
@@ -1542,7 +1561,6 @@ instance (Clip a, Clip b) => Clip (a, b) where
 
 instance Clip a => Clip (Maybe a) where
   clip r = fmap (clip r)
-
 
 -- | Manual and deferrable resolution of the `Clip` constraint for any typeable type.
 resolveClip :: forall (a :: *). Typeable a => Maybe (Dict (Clip a))

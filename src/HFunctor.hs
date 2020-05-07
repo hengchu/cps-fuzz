@@ -5,10 +5,14 @@ newtype K a b = K a
 
 newtype DeriveHXFunctor h f a = DeriveHXFunctor (h f a)
 
-newtype DeriveHInjectTrans
-  (h :: (* -> *) -> * -> *)
-  (j :: (* -> *) -> * -> *)
-  (l :: (* -> *) -> * -> *) r a = DeriveHInjectTrans (h r a)
+newtype
+  DeriveHInjectTrans
+    (h :: (* -> *) -> * -> *)
+    (j :: (* -> *) -> * -> *)
+    (l :: (* -> *) -> * -> *)
+    r
+    a
+  = DeriveHInjectTrans (h r a)
 
 -- | This is right-associative so we can pattern match on the first type
 -- parameter in typeclass instances.

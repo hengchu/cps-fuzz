@@ -3,18 +3,18 @@
 module Compiler where
 
 import Control.Lens
-import Control.Monad.Catch
-import qualified Data.Map.Strict as M
-import HFunctor
-import Syntax
-import Type.Reflection
-import Text.Printf
-import qualified Data.Set as S
-import Data.Proxy
-import Names
-import Data.List (nub)
 import Control.Monad
+import Control.Monad.Catch
 import Data.Constraint
+import Data.List (nub)
+import qualified Data.Map.Strict as M
+import Data.Proxy
+import qualified Data.Set as S
+import HFunctor
+import Names
+import Syntax
+import Text.Printf
+import Type.Reflection
 
 data Edge from to where
   Map :: HFix NRedZoneF (from -> to) -> Edge (Bag from) (Bag to)
@@ -83,8 +83,9 @@ fusedMapFunction (SIMDCons (fusion :: _ ai ao) (simd :: _ bi bo)) = do
   let fiTerm = wrap . hinject' $ EVarF fi
   let fusedMapFun =
         ELamF fi $
-        pair (f %@ (pfst fiTerm))
-             ((simd ^. mapFunction) %@ (psnd fiTerm))
+          pair
+            (f %@ (pfst fiTerm))
+            ((simd ^. mapFunction) %@ (psnd fiTerm))
   return . wrap . hinject' $ fusedMapFun
 
 injectSimd ::
@@ -189,10 +190,12 @@ data CompilerError
 
 instance Exception CompilerError
 
-insert :: forall fromType toType m.
-  (MonadThrowWithStack m,
-   Typeable fromType,
-   Typeable toType) =>
+insert ::
+  forall fromType toType m.
+  ( MonadThrowWithStack m,
+    Typeable fromType,
+    Typeable toType
+  ) =>
   EffectGraph ->
   Direction ->
   Edge fromType toType ->
@@ -298,7 +301,7 @@ traceGraphExprMonadF ::
   ExprMonadF (K EffectGraph) a ->
   m (K EffectGraph a)
 traceGraphExprMonadF (ELaplaceF _ w) = return . K . unK $ w
-traceGraphExprMonadF (EBindF m _ k)  = m .<> k
+traceGraphExprMonadF (EBindF m _ k) = m .<> k
 traceGraphExprMonadF (EReturnF a) = return . K . unK $ a
 
 traceGraphExprF ::
@@ -350,10 +353,10 @@ traceGraphF ::
   m (K EffectGraph a)
 traceGraphF =
   traceGraphFlatBagOpF
-  `sumAlgM` traceGraphExprMonadF
-  `sumAlgM` traceGraphExprF
-  `sumAlgM` traceGraphControlF
-  `sumAlgM` traceGraphPrimF
+    `sumAlgM` traceGraphExprMonadF
+    `sumAlgM` traceGraphExprF
+    `sumAlgM` traceGraphControlF
+    `sumAlgM` traceGraphPrimF
 
 effects ::
   MonadThrow m =>
@@ -361,8 +364,8 @@ effects ::
   m (Effect a)
 effects =
   hcataM' (prodAlgWithM traceGraphF (return . wrap) combine . hmap unpackEffect)
-  . etaBetaReduce
-  . monadReduce
+    . etaBetaReduce
+    . monadReduce
 
 deflateFlatBagOpF ::
   MonadThrowWithStack m =>
@@ -381,10 +384,10 @@ deflateF ::
   m (HFix MainF a)
 deflateF =
   deflateFlatBagOpF
-  `sumAlgM` return . wrap . hinject'
-  `sumAlgM` return . wrap . hinject'
-  `sumAlgM` return . wrap . hinject'
-  `sumAlgM` return . wrap . hinject'
+    `sumAlgM` return . wrap . hinject'
+    `sumAlgM` return . wrap . hinject'
+    `sumAlgM` return . wrap . hinject'
+    `sumAlgM` return . wrap . hinject'
 
 deflate ::
   MonadThrowWithStack m =>
@@ -397,16 +400,17 @@ data SecurityLevel = Public | Private
 
 isPublic :: SecurityLevel -> Bool
 isPublic Public = True
-isPublic _      = False
+isPublic _ = False
 
-data DelayedInflate m a = DelayedInflate {
-  _diFreeVars :: S.Set String,
-  _diOriginal :: HFix MainF a,
-  -- | The inflate algebra builds up a function that takes a list of public
-  -- variable names, and emits a term in the MCS language, and a flag of whether
-  -- this term evaluates to private or public data.
-  _diInflate :: S.Set String -> m (SecurityLevel, HFix NMcsF a)
-  }
+data DelayedInflate m a
+  = DelayedInflate
+      { _diFreeVars :: S.Set String,
+        _diOriginal :: HFix MainF a,
+        -- | The inflate algebra builds up a function that takes a list of public
+        -- variable names, and emits a term in the MCS language, and a flag of whether
+        -- this term evaluates to private or public data.
+        _diInflate :: S.Set String -> m (SecurityLevel, HFix NMcsF a)
+      }
 
 prjFvs :: DelayedInflate m a -> K (S.Set String) a
 prjFvs (DelayedInflate fvs _ _) = K fvs
@@ -451,65 +455,66 @@ inflateExprMonadF ::
 inflateExprMonadF _ _ term@(EBindF m var@(Var bound) f) =
   let K fvs = fvExprMonadF . hmap prjFvs $ term
       ogTerm = wrap . hinject' $ EBindF (m ^. original) var (f ^. original)
-  in DelayedInflate fvs ogTerm $ \released -> do
-    (m'SecLvl, m') <- (m ^. inflate) released
-    (f'SecLvl, f') <- (f ^. inflate) (if isPublic m'SecLvl then S.insert bound released else released)
-    return $ (f'SecLvl, wrap . hinject' $ EBindF m' var f')
+   in DelayedInflate fvs ogTerm $ \released -> do
+        (m'SecLvl, m') <- (m ^. inflate) released
+        (f'SecLvl, f') <- (f ^. inflate) (if isPublic m'SecLvl then S.insert bound released else released)
+        return $ (f'SecLvl, wrap . hinject' $ EBindF m' var f')
 inflateExprMonadF _ _ term@(EReturnF m) =
   let K fvs = fvExprMonadF . hmap prjFvs $ term
       ogTerm = wrap . hinject' $ EReturnF (m ^. original)
-  in DelayedInflate fvs ogTerm $ \released -> do
-    (m'SecLvl, m') <- (m ^. inflate) released
-    return $ (m'SecLvl, wrap . hinject' $ EReturnF m')
+   in DelayedInflate fvs ogTerm $ \released -> do
+        (m'SecLvl, m') <- (m ^. inflate) released
+        return $ (m'SecLvl, wrap . hinject' $ EReturnF m')
 inflateExprMonadF g db term@(ELaplaceF w c) =
   let K fvs = fvExprMonadF . hmap prjFvs $ term
       ogTerm = wrap . hinject' $ ELaplaceF w (c ^. original)
       cFvs = c ^. freeVars
-  in DelayedInflate fvs ogTerm $ \released -> do
-    case cFvs `S.isSubsetOf` released of
-      True -> do
-        (_, c') <- (c ^. inflate) released
-        return (Public, wrap . hinject' $ ELaplaceF w c')
-      False -> do
-        cPure <- case project' @NOrangeZoneF (c ^. original) of
-                   Just c' -> return c'
-                   Nothing ->
-                     throwM' . InternalError $ "inflateExprMonadF: laplace center is not a pure term?!"
-        let privateSources = S.toList $ cFvs `S.difference` released
-        privateSourceTypes <- traverse (getType $ g ^. types) privateSources
-        let sourceTerms = M.fromList [(db, AnyRedZone (wrap . hinject' $ EVarF @row (Var db)))]
-        privateSourceParents <- traverse (getParent $ g ^. parents) privateSources
-        parentTypes <- traverse (getType $ g ^. types) privateSourceParents
-        let parentWithTypes = nub $ zip privateSourceParents parentTypes
-        let pvSrcTypeParents = nub $ zip (zip privateSources privateSourceTypes) privateSourceParents
-        case privateSources of
-          [] ->
-            throwM' . InternalError $
-            "inflateExprMonadF: impossible, we should have at least 1 private source here"
-          _ ->
-            let dbrowName = printf "%s_row" db in
-            fuseMapPaths @row dbrowName parentWithTypes g $
-            \(fusion :: SIMDFusion fs ts) -> do
-              mf <- inject' <$> fusedMapFunction fusion
-              fusedInput <- injectSimd sourceTerms fusion
-              let inj = wrap . hinject' @_ @NMcsF $ ELamF @row (Var dbrowName) (inject' @_ @NMcsF fusedInput)
-              orangeInputName <- gfresh "orange_input"
-              let oi = Var @ts orangeInputName
-              let oiTerm = wrap . hinject' $ EVarF oi
-              releaseTerm <- inject' @_ @NMcsF <$>
-                foldM (substWithProjection fusion oiTerm) cPure pvSrcTypeParents
-              let
-                rls :: HFix NMcsF (ts -> Distr Number)
-                rls = wrap . hinject' @_ @NMcsF $
-                  ELamF oi (wrap . hinject' @_ @NMcsF $ ELaplaceF w releaseTerm)
-              case resolveClip @ts of
-                Nothing -> throwM' $ RequiresClip (SomeTypeRep (typeRep @ts))
-                Just dict ->
-                  withDict dict $ do
-                  let term =
-                        wrap . hinject' @_ @NMcsF $
-                        MRunF (vecSize @ts) (Vec [0]) (mf `compose` inj) rls
-                  return (Public, term)
+   in DelayedInflate fvs ogTerm $ \released -> do
+        case cFvs `S.isSubsetOf` released of
+          True -> do
+            (_, c') <- (c ^. inflate) released
+            return (Public, wrap . hinject' $ ELaplaceF w c')
+          False -> do
+            cPure <- case project' @NOrangeZoneF (c ^. original) of
+              Just c' -> return c'
+              Nothing ->
+                throwM' . InternalError $ "inflateExprMonadF: laplace center is not a pure term?!"
+            let privateSources = S.toList $ cFvs `S.difference` released
+            privateSourceTypes <- traverse (getType $ g ^. types) privateSources
+            let sourceTerms = M.fromList [(db, AnyRedZone (wrap . hinject' $ EVarF @row (Var db)))]
+            privateSourceParents <- traverse (getParent $ g ^. parents) privateSources
+            parentTypes <- traverse (getType $ g ^. types) privateSourceParents
+            let parentWithTypes = nub $ zip privateSourceParents parentTypes
+            let pvSrcTypeParents = nub $ zip (zip privateSources privateSourceTypes) privateSourceParents
+            case privateSources of
+              [] ->
+                throwM' . InternalError $
+                  "inflateExprMonadF: impossible, we should have at least 1 private source here"
+              _ ->
+                let dbrowName = printf "%s_row" db
+                 in fuseMapPaths @row dbrowName parentWithTypes g $
+                      \(fusion :: SIMDFusion fs ts) -> do
+                        mf <- inject' <$> fusedMapFunction fusion
+                        fusedInput <- injectSimd sourceTerms fusion
+                        let inj = wrap . hinject' @_ @NMcsF $ ELamF @row (Var dbrowName) (inject' @_ @NMcsF fusedInput)
+                        orangeInputName <- gfresh "orange_input"
+                        let oi = Var @ts orangeInputName
+                        let oiTerm = wrap . hinject' $ EVarF oi
+                        releaseTerm <-
+                          inject' @_ @NMcsF
+                            <$> foldM (substWithProjection fusion oiTerm) cPure pvSrcTypeParents
+                        let rls :: HFix NMcsF (ts -> Distr Number)
+                            rls =
+                              wrap . hinject' @_ @NMcsF $
+                                ELamF oi (wrap . hinject' @_ @NMcsF $ ELaplaceF w releaseTerm)
+                        case resolveClip @ts of
+                          Nothing -> throwM' $ RequiresClip (SomeTypeRep (typeRep @ts))
+                          Just dict ->
+                            withDict dict $ do
+                              let term =
+                                    wrap . hinject' @_ @NMcsF $
+                                      MRunF (vecSize @ts) (Vec [0]) (mf `compose` inj) rls
+                              return (Public, term)
   where
     getParent parents x =
       case M.lookup x parents of
@@ -517,14 +522,12 @@ inflateExprMonadF g db term@(ELaplaceF w c) =
         Nothing ->
           throwM' . InternalError $
             printf "inflateExprMonadF: %s has no parent" x
-
     getType types x =
       case M.lookup x types of
         Just ty -> return ty
         Nothing ->
           throwM' . InternalError $
             printf "inflateExprMonadF: %s has no known type" x
-
     substWithProjection ::
       forall fs ts a.
       (Typeable ts) =>
@@ -536,10 +539,11 @@ inflateExprMonadF g db term@(ELaplaceF w c) =
     substWithProjection fusion releaseInput releaseTerm ((src, srcTy), srcParent) = do
       case srcTy of
         SomeTypeRep (srcTr :: _ srcTy) ->
-          withTypeable srcTr $
-          withKindStar @_ @srcTy $ do
-          projFun <- projectSimd @_ @ts @srcTy srcParent fusion
-          return $ hcata' (substGenF (Var @srcTy src) (projFun releaseInput)) releaseTerm
+          withTypeable srcTr
+            $ withKindStar @_ @srcTy
+            $ do
+              projFun <- projectSimd @_ @ts @srcTy srcParent fusion
+              return $ hcata' (substGenF (Var @srcTy src) (projFun releaseInput)) releaseTerm
 
 pullMapEffectsTrans' ::
   forall (row1 :: *) (row2 :: *) m.
@@ -644,14 +648,16 @@ pullClipSumBound' g from to =
 withBagRowType ::
   forall unknown r m.
   (MonadThrowWithStack m, Typeable unknown) =>
-  (forall row. (unknown ~ Bag row, Typeable row) => Proxy row -> m r) -> m r
+  (forall row. (unknown ~ Bag row, Typeable row) => Proxy row -> m r) ->
+  m r
 withBagRowType k =
   withBagType @unknown @r @m $ \(_ :: Proxy (Bag row)) -> k (Proxy :: _ row)
 
 withKindStar ::
   forall k (a :: k) r m.
   (Typeable a, MonadThrowWithStack m) =>
-  (k ~ * => m r) -> m r
+  (k ~ * => m r) ->
+  m r
 withKindStar k =
   case eqTypeRep (typeRepKind (typeRep @a)) (typeRepKind (typeRep @Int)) of
     Just HRefl -> k
