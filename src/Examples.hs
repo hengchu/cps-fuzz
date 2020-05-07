@@ -56,7 +56,7 @@ needs_flatten db =
   bag_filter_sum (bmap plus_1 db $ \($(named "r")) -> r)
   where
     plus_1 :: Name "row" (CPSFuzz f Number) -> CPSFuzz f Number
-    plus_1 (N v) = v+1
+    plus_1 (N v) = v + 1
 
 bag_filter_sum_noise :: forall f. CPSFuzz f (Bag Number) -> CPSFuzz f (Distr Number)
 bag_filter_sum_noise db =

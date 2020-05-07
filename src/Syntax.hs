@@ -7,6 +7,7 @@ module Syntax where
 import Control.Lens
 import Control.Monad.Catch
 import Control.Monad.State.Strict
+import Data.Functor.Compose
 import Data.Kind
 import Data.Proxy
 import qualified Data.Set as S
@@ -513,10 +514,10 @@ data AnyNCPSFuzz where
   AnyNCPSFuzz :: Typeable a => HFix NCPSFuzzF a -> AnyNCPSFuzz
 
 data UnOpenableTerm = UnOpenableTerm
-  deriving Show
+  deriving (Show)
 
 data UnFlattenableTerm = UnFlattenableTerm
-  deriving Show
+  deriving (Show)
 
 data TypeCheckError
   = TypeCheckError
@@ -1008,7 +1009,9 @@ close ::
     Typeable a,
     Typeable b
   ) =>
-  Var a -> HFix h b -> HFix h (a -> b)
+  Var a ->
+  HFix h b ->
+  HFix h (a -> b)
 close var body = wrap . hinject' $ ELamF var body
 
 composeM ::
@@ -1020,43 +1023,46 @@ composeM ::
     Typeable c,
     MonadThrowWithStack m
   ) =>
-  HFix h (b -> c) -> HFix h (a -> b) -> m (HFix h (a -> c))
+  HFix h (b -> c) ->
+  HFix h (a -> b) ->
+  m (HFix h (a -> c))
 composeM g f = do
   (fBound, fBody) <- openM f
   return $ close fBound (wrap . hinject' $ EAppF g fBody)
 
--- | Swap two names throughout the expression.
-swapExprF :: HInject ExprF h => String -> String -> ExprF (HFix h) a -> HFix h a
-swapExprF var1 var2 (EVarF (Var x)) =
-  case (var1 == x, var2 == x) of
-    (True, _) -> wrap . hinject' $ EVarF (Var var2)
-    (_, True) -> wrap . hinject' $ EVarF (Var var1)
-    _ -> wrap . hinject' $ EVarF (Var x)
-swapExprF var1 var2 (ELamF (Var x) body) =
-  case (var1 == x, var2 == x) of
-    (True, _) -> wrap . hinject' $ ELamF (Var var2) body
-    (_, True) -> wrap . hinject' $ ELamF (Var var1) body
-    _ -> wrap . hinject' $ ELamF (Var x) body
-swapExprF _ _ app = wrap . hinject' $ app
+swapGenF ::
+  ( HInject ExprF h,
+    HInject ExprMonadF h
+  ) =>
+  String ->
+  String ->
+  h (HFix h) a ->
+  HFix h a
+swapGenF var1 var2 (hproject' -> Just (EVarF (Var x)))
+  | var1 == x = wrap . hinject' $ EVarF (Var var2)
+swapGenF var1 var2 (hproject' -> Just (ELamF (Var bound) body))
+  | var1 == bound = wrap . hinject' $ ELamF (Var var2) body
+swapGenF var1 var2 (hproject' -> Just (EBindF m (Var bound) k))
+  | var1 == bound = wrap . hinject' $ EBindF m (Var var2) k
+swapGenF _ _ term = wrap term
 
-swapExprMonadF :: HInject ExprMonadF h => String -> String -> ExprMonadF (HFix h) a -> HFix h a
-swapExprMonadF var1 var2 (EBindF m (Var x) f) =
-  case (var1 == x, var2 == x) of
-    (True, _) -> wrap . hinject' $ EBindF m (Var var2) f
-    (_, True) -> wrap . hinject' $ EBindF m (Var var1) f
-    _ -> wrap . hinject' $ EBindF m (Var x) f
-swapExprMonadF _ _ term = wrap . hinject' $ term
+swapGen ::
+  ( HFunctor h,
+    HInject ExprF h,
+    HInject ExprMonadF h
+  ) =>
+  String ->
+  String ->
+  HFix h a ->
+  HFix h a
+swapGen var1 var2 = hcata' (swapGenF var1 var2)
 
-swapF :: String -> String -> NCPSFuzzF (HFix NCPSFuzzF) a -> HFix NCPSFuzzF a
-swapF var1 var2 =
-  recurse
-    `sumAlg` swapExprMonadF var1 var2
-    `sumAlg` swapExprF var1 var2
-    `sumAlg` recurse
-    `sumAlg` recurse
-  where
-    recurse :: HInject h NCPSFuzzF => h (HFix NCPSFuzzF) a -> HFix NCPSFuzzF a
-    recurse = wrap . hinject'
+fvExprF ::
+  ExprF (K (S.Set String)) a ->
+  K (S.Set String) a
+fvExprF (EVarF (Var x)) = K (S.singleton x)
+fvExprF (ELamF (Var x) (unK -> body)) = K (S.delete x body)
+fvExprF (EAppF (unK -> a) (unK -> b)) = K (a <> b)
 
 -- | Simple substitution that may capture.
 substExprF ::
@@ -1104,52 +1110,121 @@ substF v u =
 -- TODO: this is actually wrong... other bag operations also need to be
 -- considered, because their continuations could capture and return bags from
 -- outer operations.
-flattenF :: forall rest h h' a m.
-  (HInject BagOpF h,
-   HInject ExprF h',
-   HInject FlatBagOpF h',
-   HTraversable h',
-   MonadThrowWithStack m,
-   (BagOpF     :+: rest) ~ h,
-   (FlatBagOpF :+: rest) ~ h',
-   HInject rest (BagOpF :+: rest),
-   HInject rest h',
-   FreshM m) =>
+flattenF ::
+  forall rest h h' a m.
+  ( HInject BagOpF h,
+    HInject ExprF h',
+    HInject FlatBagOpF h',
+    HTraversable h',
+    MonadThrowWithStack m,
+    (BagOpF :+: rest) ~ h,
+    (FlatBagOpF :+: rest) ~ h',
+    HInject rest (BagOpF :+: rest),
+    HInject rest h',
+    FreshM m
+  ) =>
   h (HFix h') a ->
   m (HFix h' a)
 flattenF (hproject' -> Just (BMapF mapFun inputDb kont)) =
   case hproject' @ExprF . unwrap $ inputDb of
     Just (EVarF var) -> return . wrap . hinject' $ FBMapF mapFun var kont
     _ -> case hproject' @FlatBagOpF . unwrap $ inputDb of
-           Just (FBMapF mf upperDb upperKont) -> do
-             result <- gfresh "upper_bmap_result"
-             -- A variable that represents the result of the upper bmap
-             let var = Var result
-             newKont <- (wrap . hinject' $
-                         ELamF var $
-                         wrap . hinject' $
-                         FBMapF mapFun var kont) `composeM` upperKont
-             return . wrap . hinject' $ FBMapF mf upperDb newKont
-           _ -> throwM' UnFlattenableTerm
+      Just (FBMapF mf upperDb upperKont) -> do
+        result <- gfresh "upper_bmap_result"
+        -- A variable that represents the result of the upper bmap
+        let var = Var result
+        newKont <-
+          ( wrap . hinject'
+              $ ELamF var
+              $ wrap . hinject'
+              $ FBMapF mapFun var kont
+            )
+            `composeM` upperKont
+        return . wrap . hinject' $ FBMapF mf upperDb newKont
+      _ -> throwM' UnFlattenableTerm
 flattenF (hproject' -> Just (BSumF clip inputDb kont)) =
   case hproject' @ExprF . unwrap $ inputDb of
     Just (EVarF var) -> return . wrap . hinject' $ FBSumF clip var kont
     _ -> case hproject' @FlatBagOpF . unwrap $ inputDb of
-           Just (FBMapF mf upperDb upperKont) -> do
-             result <- gfresh "upper_bmap_result"
-             -- A variable that represents the result of the upper bmap
-             let var = Var result
-             newKont <- (wrap . hinject' $
-                         ELamF var $
-                         wrap . hinject' $
-                         FBSumF clip var kont) `composeM` upperKont
-             return . wrap . hinject' $ FBMapF mf upperDb newKont
-           _ -> throwM' UnFlattenableTerm
+      Just (FBMapF mf upperDb upperKont) -> do
+        result <- gfresh "upper_bmap_result"
+        -- A variable that represents the result of the upper bmap
+        let var = Var result
+        newKont <-
+          ( wrap . hinject'
+              $ ELamF var
+              $ wrap . hinject'
+              $ FBSumF clip var kont
+            )
+            `composeM` upperKont
+        return . wrap . hinject' $ FBMapF mf upperDb newKont
+      _ -> throwM' UnFlattenableTerm
 flattenF (hproject' @rest -> Just term) = return . wrap . hinject' $ term
 flattenF _ = throwM' UnFlattenableTerm
 
 flatten :: (MonadThrowWithStack m, FreshM m) => HFix NCPSFuzzF a -> m (HFix NNormalizedF a)
 flatten = hcataM' flattenF
+
+-- We don't actually need the full generality of SwapFun. Just build up a map
+-- from bound names to fresh names. This avoids some injections and projections.
+newtype SwapFun h
+  = SwapFun {runSwapFun :: forall a. HFix h a -> HFix h a}
+
+data DelayedSubst m h b
+  = DS
+      { _dsSubst :: SwapFun h -> m (HFix h b)
+      }
+
+makeLensesWith abbreviatedFields ''DelayedSubst
+
+-- An algebra for capture avoiding substitution. At binding sites, we check if
+-- the bound variable would be captured by the needle substituted into the
+-- term. If so, we freshen the bound variable to a globally fresh one, and then
+-- perform substitution.
+casubstExprF ::
+  forall a b h m.
+  ( Typeable a,
+    HInject ExprF h,
+    HInject ExprMonadF h,
+    FreshM m,
+    HFunctor h
+  ) =>
+  Var a ->
+  HFix h a ->
+  (forall a. HFix h a -> S.Set String) ->
+  ExprF (DelayedSubst m h) b ->
+  (DelayedSubst m h) b
+casubstExprF var@(Var x) needle fvFun (EVarF x') =
+  let raw = wrap . hinject' $ EVarF x'
+   in DS $
+        \(sf :: SwapFun h) -> return $
+          case (hproject' @ExprF @h . unwrap . runSwapFun sf $ raw) of
+            Just (EVarF (Var x')) ->
+              if x == x'
+                then case eqTypeRep (typeRep @a) (typeRep @b) of
+                  Just HRefl -> needle
+                  _ -> raw
+                else raw
+            _ -> raw -- this branch is dead code... swap fun should not change
+              -- constructor type.
+casubstExprF var@(Var x) needle fvFun (ELamF var'@(Var bound) body) =
+  DS $
+    \sf -> do
+      let fvs = fvFun needle
+      if bound `S.member` fvs
+        then do
+          bound' <- gfresh bound
+          body' <- (body ^. subst) (SwapFun $ swapGen bound bound' . runSwapFun sf)
+          return $ wrap . hinject' $ ELamF var' body'
+        else do
+          body' <- (body ^. subst) sf
+          return $ wrap . hinject' $ ELamF var' body'
+casubstExprF _ _ _ (EAppF a b) =
+  DS $
+    \sf -> do
+      a' <- (a ^. subst) sf
+      b' <- (b ^. subst) sf
+      return $ wrap . hinject' $ EAppF a' b'
 
 -- ##################
 -- # INFRASTRUCTURE #
