@@ -1,11 +1,11 @@
 module Compiler where
 
 import Control.Lens
+import Control.Monad.Catch
 import qualified Data.Map.Strict as M
 import HFunctor
 import Syntax
 import Type.Reflection
-import Control.Monad.Catch
 
 data Edge from to where
   Map :: HFix NRedZoneF (from -> to) -> Edge (Bag from) (Bag to)
@@ -37,9 +37,9 @@ data Effect r
 
 makeLensesWith abbreviatedFields ''Effect
 
-data CompilerError =
-  InternalError String
-  deriving Show
+data CompilerError
+  = InternalError String
+  deriving (Show)
 
 instance Exception CompilerError
 
@@ -50,12 +50,16 @@ combine :: MonadThrowWithStack m => K EffectGraph a -> HFix NNormalizedF a -> m 
 combine (unK -> g) term = return $ Eff g term
 
 traceMCSEffectM ::
-  (MonadThrowWithStack m,
-   HInject FlatBagOpF h) =>
-  h (K EffectGraph) a -> m (K EffectGraph a)
+  ( MonadThrowWithStack m,
+    HInject FlatBagOpF h
+  ) =>
+  h (K EffectGraph) a ->
+  m (K EffectGraph a)
 traceMCSEffectM = undefined
 
-effects :: MonadThrow m =>
-  HFix NNormalizedF a -> m (Effect a)
+effects ::
+  MonadThrow m =>
+  HFix NNormalizedF a ->
+  m (Effect a)
 effects =
   hcataM' (prodAlgWithM traceMCSEffectM (return . wrap) combine . hmap unpack)

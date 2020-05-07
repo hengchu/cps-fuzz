@@ -149,7 +149,6 @@ prodAlgWithM algM1 algM2 f a = do
     af = hmap prj1 a
     ag = hmap prj2 a
 
-
 sumAlgConst ::
   HInject h j =>
   (forall a. h f a -> f a) ->
