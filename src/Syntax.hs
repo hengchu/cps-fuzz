@@ -16,9 +16,34 @@ import GHC.TypeLits
 import HFunctor
 import qualified Language.Haskell.TH as TH
 import Names
-import Text.PrettyPrint.ANSI.Leijen hiding ((<$>))
+--import Text.PrettyPrint.ANSI.Leijen hiding ((<$>))
 import Text.Printf
 import Type.Reflection
+import Debug.Trace
+import Data.Constraint
+
+class VecStorable a where
+  -- | How many dimensions does it take to store `a`?
+  vecSize :: Int
+
+  fromVec :: Vec Number -> a
+  asVec :: a -> Vec Number
+
+class VecStorable a => VecMonoid a where
+  -- | Law:
+  -- 1. asVec (a `add` b) = (asVec a) + (asVec b) -- can distribute `asVec`
+  -- 2. empty is identity for add
+  -- 3. more?
+  add :: a -> a -> a
+
+  empty :: a
+
+class VecMonoid a => Clip a where
+  -- | Law:
+  -- 1. asVec (clip r a) = map (clip r) (asVec a) -- can distribute `clip r`
+  -- 2. clip r empty = empty
+  -- 3. more?
+  clip :: Vec Number -> a -> a
 
 -- | Carries a statically determined name hint for the wrapped value.
 newtype Name :: Symbol -> * -> * where
@@ -52,11 +77,11 @@ instance Monad (Mon f m) where
 
 newtype Bag a = Bag [a]
   deriving (Show, Eq, Ord)
-  deriving (Functor, Applicative, Monad) via []
+  deriving (Functor, Applicative, Monad, Foldable) via []
 
 newtype Vec a = Vec [a]
   deriving (Show, Eq, Ord)
-  deriving (Functor, Applicative, Monad) via []
+  deriving (Functor, Applicative, Monad, Foldable) via []
 
 data Var (a :: *) where
   Var :: Typeable a => String -> Var a
@@ -74,6 +99,7 @@ data ExprF :: (* -> *) -> * -> * where
   EVarF :: Typeable a => Var a -> ExprF r a
   ELamF :: (Typeable a, Typeable b) => Var a -> r b -> ExprF r (a -> b)
   EAppF :: (Typeable a, Typeable b) => r (a -> b) -> r a -> ExprF r b
+  ECompF :: (Typeable a, Typeable b, Typeable c) => r (b -> c) -> r (a -> b) -> ExprF r (a -> c)
   deriving (HXFunctor) via (DeriveHXFunctor ExprF)
 
 data XExprMonadF :: (* -> *) -> * -> * where
@@ -156,6 +182,16 @@ data ControlF :: (* -> *) -> * -> * where
   CIfF :: Typeable a => r Bool -> r a -> r a -> ControlF r a
   deriving (HXFunctor) via (DeriveHXFunctor ControlF)
 
+data McsF :: (* -> *) -> * -> * where
+  MRunF ::
+    (Typeable row, Typeable sum) =>
+    Int ->
+    Vec Number ->
+    r (row -> sum) ->
+    r (sum -> Distr Number) ->
+    McsF r (Distr Number)
+  deriving HXFunctor via (DeriveHXFunctor McsF)
+
 instance HXFunctor XExprF where
   hxmap f g =
     \case
@@ -169,6 +205,7 @@ instance HFunctor ExprF where
       EVarF x -> EVarF x
       ELamF bound (f -> body) -> ELamF bound body
       EAppF (f -> lam) (f -> body) -> EAppF lam body
+      ECompF (f -> bc) (f -> ab) -> ECompF bc ab
 
 instance HFoldable ExprF where
   hfoldMap f =
@@ -176,6 +213,7 @@ instance HFoldable ExprF where
       EVarF _ -> mempty
       ELamF _ (f -> body) -> body
       EAppF (f -> lam) (f -> body) -> lam <> body
+      ECompF (f -> bc) (f -> ab) -> bc <> ab
 
 instance HTraversable ExprF where
   htraverse f =
@@ -183,6 +221,7 @@ instance HTraversable ExprF where
       EVarF x -> pure (EVarF x)
       ELamF bound (f -> mbody) -> ELamF bound <$> mbody
       EAppF (f -> lam) (f -> body) -> EAppF <$> lam <*> body
+      ECompF (f -> bc) (f -> ab) -> ECompF <$> bc <*> ab
 
 instance HFunctor ExprMonadF where
   hmap f =
@@ -344,6 +383,23 @@ instance HTraversable PrimF where
       PFstF (f -> a) -> PFstF <$> a
       PSndF (f -> a) -> PSndF <$> a
 
+instance HFunctor McsF where
+  hmap f =
+    \case
+      MRunF reprSize clip (f -> mf) (f -> rf) ->
+        MRunF reprSize clip mf rf
+
+instance HFoldable McsF where
+  hfoldMap f =
+    \case
+      MRunF _ _ (f -> mf) (f -> rf) -> mf <> rf
+
+instance HTraversable McsF where
+  htraverse f =
+    \case
+      MRunF reprSize clip (f -> mf) (f -> rf) ->
+        MRunF <$> pure reprSize <*> pure clip <*> mf <*> rf
+
 -- | The functor-like variable `f` is the interpretation domain. Examples
 -- include: `Doc` for pretty-printing, `Identity` for evaluation, etc.
 type CPSFuzzF = BagOpF :+: XExprMonadF :+: XExprF :+: ControlF :+: PrimF
@@ -355,11 +411,14 @@ type MainF = ExprMonadF :+: ExprF :+: ControlF :+: PrimF
 type NCPSFuzzF = BagOpF :+: MainF
 
 type NRedZoneF = ExprF :+: ControlF :+: PrimF
+type NOrangeZoneF = ExprF :+: ControlF :+: PrimF
 
 -- | Morally the same type as NCPSFuzzF, but guaranteed that all input databases
 -- are variable names. This lifts all of the bag operations up so that all of
 -- the continuations are flattened.
 type NNormalizedF = FlatBagOpF :+: MainF
+
+type NMcsF = McsF :+: MainF
 
 type CPSFuzz f = HXFix CPSFuzzF f
 
@@ -506,6 +565,65 @@ log = xwrap . hinject' . PLogF
 sqrt :: CPSFuzz f Number -> CPSFuzz f Number
 sqrt = xwrap . hinject' . PSqrtF
 
+infixl 9 %@, `apply`
+
+(%@) ::
+  (Typeable a,
+   Typeable b,
+   HInject ExprF h
+  ) => HFix h (a -> b) -> HFix h a -> HFix h b
+(%@) = apply
+
+apply ::
+  (Typeable a,
+   Typeable b,
+   HInject ExprF h
+  ) => HFix h (a -> b) -> HFix h a -> HFix h b
+apply f arg = wrap . hinject' $ EAppF f arg
+
+compose ::
+  forall h a b c.
+  ( HInject ExprF h,
+    Typeable a,
+    Typeable b,
+    Typeable c
+  ) =>
+  HFix h (b -> c) ->
+  HFix h (a -> b) ->
+  HFix h (a -> c)
+compose bc ab = wrap . hinject' $ ECompF bc ab
+
+pair ::
+  forall h a b.
+  ( HInject PrimF h,
+    Typeable a,
+    Typeable b
+  ) =>
+  HFix h a ->
+  HFix h b ->
+  HFix h (a, b)
+pair a b = wrap . hinject' $ PPairF a b
+
+pfst ::
+  forall h a b.
+  ( HInject PrimF h,
+    Typeable a,
+    Typeable b
+  ) =>
+  HFix h (a, b) ->
+  HFix h a
+pfst = wrap . hinject' . PFstF
+
+psnd ::
+  forall h a b.
+  ( HInject PrimF h,
+    Typeable a,
+    Typeable b
+  ) =>
+  HFix h (a, b) ->
+  HFix h b
+psnd = wrap . hinject' . PSndF
+
 -- ##################
 -- # LANGUAGE TOOLS #
 -- ##################
@@ -649,6 +767,14 @@ namedBagOpFM (BSumF clip ((unK -> db) :: _ (Bag Number)) ((unK -> kont) :: _ (Nu
         withHRefl @(Bag Number) @bagnum $ \HRefl ->
           withHRefl @(Number -> t) @num_arrow_t $ \HRefl ->
             return . AnyNCPSFuzz . wrap . hinject' $ BSumF clip db' kont'
+
+fvExprMonadF ::
+  ExprMonadF (K (S.Set String)) a ->
+  K (S.Set String) a
+fvExprMonadF (ELaplaceF _ (unK -> fvs)) = K fvs
+fvExprMonadF (EReturnF (unK -> fvs)) = K fvs
+fvExprMonadF (EBindF (unK -> fvs1) (Var bound) (unK -> fvs2)) = K $
+  fvs1 `S.union` S.delete bound fvs2
 
 fvXExprMonadF ::
   FreshM m =>
@@ -1014,22 +1140,143 @@ close ::
   HFix h (a -> b)
 close var body = wrap . hinject' $ ELamF var body
 
-composeM ::
-  forall h a b c m.
-  ( HInject ExprF h,
-    HTraversable h,
-    Typeable a,
-    Typeable b,
-    Typeable c,
-    MonadThrowWithStack m
-  ) =>
-  HFix h (b -> c) ->
-  HFix h (a -> b) ->
-  m (HFix h (a -> c))
-composeM g f = do
-  (fBound, fBody) <- openM f
-  return $ close fBound (wrap . hinject' $ EAppF g fBody)
+data Progress a =
+  Worked a
+  | Done a
+  deriving Functor
 
+unprogress :: Progress a -> a
+unprogress (Worked a) = a
+unprogress (Done a) = a
+
+etaReduceF ::
+  forall h a.
+  HInject ExprF h =>
+  h (HFix h) a ->
+  Progress (h (HFix h) a)
+etaReduceF term@(hproject' -> Just (ELamF (bound :: _ a1) body)) =
+  case hproject' . unwrap $ body of
+    Just (EAppF f arg) ->
+      case hproject' . unwrap $ arg of
+        Just (EVarF (somevar :: _ a2)) ->
+          case eqTypeRep (typeRep @a1) (typeRep @a2) of
+            Just HRefl ->
+              if bound == somevar
+              then Worked $ unwrap f
+              else Done term
+            _ -> Done term
+        _ -> Done term
+    _ -> Done term
+etaReduceF term = Done term
+
+betaReduceF ::
+  forall h a.
+  HInject ExprF h =>
+  h (HFix h) a ->
+  Progress (h (HFix h) a)
+betaReduceF term@(hproject' -> Just (EAppF f arg)) =
+  case hproject' . unwrap $ f of
+    Just (ELamF bound body) ->
+      Worked $ unwrap . substGenF bound arg $ unwrap body
+    _ -> Done term
+betaReduceF term = Done term
+
+etaBetaReduceF ::
+  forall h a.
+  (HInject ExprF h, HFunctor h) =>
+  h (Compose Progress (HFix h)) a ->
+  Compose Progress (HFix h) a
+etaBetaReduceF term =
+  case etaReduceF . hmap (unprogress . getCompose) $ term of
+    Worked t -> Compose . Worked . wrap . unprogress $ betaReduceF t
+    Done t -> Compose . fmap wrap $ betaReduceF t
+
+untilConvergence :: (a -> Progress a) -> (a -> a)
+untilConvergence f a =
+  case f a of
+    Worked a -> untilConvergence f a
+    Done a -> a
+
+etaBetaReduceStep ::
+  forall h a.
+  (HInject ExprF h,
+   HFunctor h) =>
+  HFix h a ->
+  Progress (HFix h a)
+etaBetaReduceStep = getCompose . hcata' etaBetaReduceF
+
+-- | Eta-beta reduces until convergence.
+etaBetaReduce ::
+  forall h a.
+  (HInject ExprF h,
+   HFunctor h) =>
+  HFix h a ->
+  HFix h a
+etaBetaReduce = untilConvergence etaBetaReduceStep
+
+monadReduceLeftF ::
+  forall h a.
+  (HInject ExprMonadF h,
+   HInject ExprF h) =>
+  h (HFix h) a ->
+  Progress (h (HFix h) a)
+monadReduceLeftF term@(hproject' -> Just (EBindF m bound f)) =
+  case hproject' . unwrap $ m of
+    Just (EReturnF a) -> Worked . unwrap $ substGenF bound a (unwrap f)
+    _ -> Done term
+monadReduceLeftF term = Done term
+
+monadReduceRightF ::
+  forall h a.
+  (HInject ExprMonadF h,
+   HInject ExprF h) =>
+  h (HFix h) a ->
+  Progress (h (HFix h) a)
+monadReduceRightF term@(hproject' -> Just (EBindF m (bound :: _ a1) f)) =
+  case hproject' . unwrap $ f of
+    Just (EReturnF v) ->
+      case hproject' . unwrap $ v of
+        Just (EVarF (bound' :: _ a2)) ->
+          case eqTypeRep (typeRep @a1) (typeRep @a2) of
+            Just HRefl -> if bound == bound'
+                          then Worked $ unwrap m
+                          else Done term
+            _ -> Done term
+        _ -> Done term
+    _ -> Done term
+monadReduceRightF term = Done term
+
+monadReduceF ::
+  forall h a.
+  (HFunctor h,
+   HInject ExprMonadF h,
+   HInject ExprF h) =>
+  h (Compose Progress (HFix h)) a ->
+  Compose Progress (HFix h) a
+monadReduceF term =
+  case monadReduceLeftF . hmap (unprogress . getCompose) $ term of
+    Worked t -> Compose . Worked . wrap . unprogress $ monadReduceRightF t
+    Done t -> Compose . fmap wrap $ monadReduceRightF t
+
+monadReduceStep ::
+  forall h a.
+  (HFunctor h,
+   HInject ExprMonadF h,
+   HInject ExprF h) =>
+  HFix h a ->
+  Progress (HFix h a)
+monadReduceStep = getCompose . hcata' monadReduceF
+
+monadReduce ::
+  forall h a.
+  (HFunctor h,
+   HInject ExprMonadF h,
+   HInject ExprF h) =>
+  HFix h a ->
+  HFix h a
+monadReduce = untilConvergence monadReduceStep
+
+{-
 swapGenF ::
   ( HInject ExprF h,
     HInject ExprMonadF h
@@ -1056,6 +1303,7 @@ swapGen ::
   HFix h a ->
   HFix h a
 swapGen var1 var2 = hcata' (swapGenF var1 var2)
+-}
 
 fvExprF ::
   ExprF (K (S.Set String)) a ->
@@ -1063,6 +1311,7 @@ fvExprF ::
 fvExprF (EVarF (Var x)) = K (S.singleton x)
 fvExprF (ELamF (Var x) (unK -> body)) = K (S.delete x body)
 fvExprF (EAppF (unK -> a) (unK -> b)) = K (a <> b)
+fvExprF (ECompF (unK -> bc) (unK -> ab)) = K (bc <> ab)
 
 -- | Simple substitution that may capture.
 substExprF ::
@@ -1133,13 +1382,12 @@ flattenF (hproject' -> Just (BMapF mapFun inputDb kont)) =
         result <- gfresh "upper_bmap_result"
         -- A variable that represents the result of the upper bmap
         let var = Var result
-        newKont <-
-          ( wrap . hinject'
-              $ ELamF var
-              $ wrap . hinject'
-              $ FBMapF mapFun var kont
-            )
-            `composeM` upperKont
+        let newKont =
+              (wrap . hinject'
+               $ ELamF var
+               $ wrap . hinject'
+               $ FBMapF mapFun var kont
+              ) `compose` upperKont
         return . wrap . hinject' $ FBMapF mf upperDb newKont
       _ -> throwM' UnFlattenableTerm
 flattenF (hproject' -> Just (BSumF clip inputDb kont)) =
@@ -1150,13 +1398,12 @@ flattenF (hproject' -> Just (BSumF clip inputDb kont)) =
         result <- gfresh "upper_bmap_result"
         -- A variable that represents the result of the upper bmap
         let var = Var result
-        newKont <-
-          ( wrap . hinject'
-              $ ELamF var
-              $ wrap . hinject'
-              $ FBSumF clip var kont
-            )
-            `composeM` upperKont
+        let newKont =
+              (wrap . hinject'
+               $ ELamF var
+               $ wrap . hinject'
+               $ FBSumF clip var kont
+              ) `compose` upperKont
         return . wrap . hinject' $ FBMapF mf upperDb newKont
       _ -> throwM' UnFlattenableTerm
 flattenF (hproject' @rest -> Just term) = return . wrap . hinject' $ term
@@ -1165,6 +1412,14 @@ flattenF _ = throwM' UnFlattenableTerm
 flatten :: (MonadThrowWithStack m, FreshM m) => HFix NCPSFuzzF a -> m (HFix NNormalizedF a)
 flatten = hcataM' flattenF
 
+fvMainF :: MainF (K (S.Set String)) a -> K (S.Set String) a
+fvMainF =
+  fvExprMonadF
+  `sumAlg` fvExprF
+  `sumAlg` fvControlF
+  `sumAlg` fvPrimF
+
+{-
 -- We don't actually need the full generality of SwapFun. Just build up a map
 -- from bound names to fresh names. This avoids some injections and projections.
 newtype SwapFun h
@@ -1225,10 +1480,97 @@ casubstExprF _ _ _ (EAppF a b) =
       a' <- (a ^. subst) sf
       b' <- (b ^. subst) sf
       return $ wrap . hinject' $ EAppF a' b'
+-}
 
 -- ##################
 -- # INFRASTRUCTURE #
 -- ##################
+
+vecConcat :: Vec a -> Vec a -> Vec a
+vecConcat (Vec as) (Vec bs) = Vec (as ++ bs)
+
+instance VecStorable Number where
+  vecSize = 1
+  fromVec (Vec (x : _)) = x
+  fromVec _ = error "fromVec<Number>: cannot restore from empty vec"
+  asVec a = Vec [a]
+
+instance (VecStorable a, VecStorable b) => VecStorable (a, b) where
+  vecSize = vecSize @a + vecSize @b
+  fromVec (Vec as) =
+    (fromVec (Vec $ take (vecSize @a) as), fromVec (Vec . take (vecSize @b) . drop (vecSize @a) $ as))
+  asVec (a, b) = vecConcat (asVec a) (asVec b)
+
+instance VecMonoid a => VecStorable (Maybe a) where
+  vecSize = 1 + vecSize @a
+  fromVec (Vec []) = error "fromVec: cannot decode (Maybe a) from empty vector"
+  fromVec (Vec (x : more)) =
+    if x > 0
+      then Just (fromVec (Vec more))
+      else Nothing
+  asVec (Just a) =
+    let Vec a' = asVec a
+     in Vec (1 : a')
+  asVec Nothing =
+    let Vec a' = asVec (empty @a)
+     in Vec (0 : a')
+
+instance VecMonoid Number where
+  add = (+)
+  empty = 0
+
+instance (VecMonoid a, VecMonoid b) => VecMonoid (a, b) where
+  add (a1, b1) (a2, b2) = (add a1 a2, add b1 b2)
+  empty = (empty @a, empty @b)
+
+instance VecMonoid a => VecMonoid (Maybe a) where
+  add (Just a) (Just b) = Just (a `add` b)
+  add (Just a) Nothing = Just a
+  add Nothing (Just b) = Just b
+  add Nothing Nothing = Nothing
+  empty = Nothing
+
+instance Clip Number where
+  clip (Vec [r]) a =
+    if a >= bound then bound else if a <= - bound then - bound else a
+    where
+      bound = abs r
+  clip _ _ = error "clip @Number: expect bound to have size 1"
+
+instance (Clip a, Clip b) => Clip (a, b) where
+  clip r (a, b) = (clip r a, clip r b)
+
+instance Clip a => Clip (Maybe a) where
+  clip r = fmap (clip r)
+
+
+-- | Manual and deferrable resolution of the `Clip` constraint for any typeable type.
+resolveClip :: forall (a :: *). Typeable a => Maybe (Dict (Clip a))
+resolveClip =
+  case eqTypeRep (typeRep @Number) (typeRep @a) of
+    Just HRefl -> Just Dict
+    _ -> do
+      case (typeRep @a) of
+        App maybeMaybe (a1 :: typeRep a1)
+          | SomeTypeRep maybeMaybe == SomeTypeRep (typeRep @Maybe) -> do
+            HRefl <- eqTypeRep (typeRepKind a1) (typeRepKind (typeRep @Int))
+            a1Dict <- withTypeable a1 $ resolveClip @a1
+            case eqTypeRep maybeMaybe (typeRep @Maybe) of
+              Just HRefl -> withDict a1Dict $ return (Dict @(Clip (Maybe a1)))
+              _ -> Nothing
+        App con (a2 :: typeRep a2) -> do
+          HRefl <- eqTypeRep (typeRepKind a2) (typeRepKind (typeRep @Int))
+          (a2Dict :: Dict (Clip a2)) <- withTypeable a2 $ resolveClip @a2
+          case con of
+            App maybeT2 (a1 :: TypeRep a1)
+              | SomeTypeRep maybeT2 == SomeTypeRep (typeRep @(,)) -> do
+                HRefl <- eqTypeRep (typeRepKind a1) (typeRepKind (typeRep @Int))
+                HRefl <- eqTypeRep (maybeT2) (typeRep @(,))
+                (a1Dict :: Dict (Clip a1)) <- withTypeable a1 $ resolveClip @a1
+                let tupleDict = withDict a1Dict $ withDict a2Dict $ Dict @(Clip (a1, a2))
+                return tupleDict
+            _ -> Nothing
+        _ -> Nothing
 
 -- Instead of using codensity to turn the language functor into a monad, we use
 -- rebindable syntax. This gives more freedom to us for dealing with names.
@@ -1271,6 +1613,7 @@ instance
 instance Show (HFix NNormalizedF a) where
   show _ = "show @(HFix NNormalizedF a): not yet implemented"
 
+{-
 prettyExprF ::
   ExprF (K Doc) a ->
   K Doc a
@@ -1282,6 +1625,7 @@ prettyExprF (EAppF (unK -> a) (unK -> b)) = K . parens $ a <+> b
 
 prettyExpr :: HFix ExprF a -> Doc
 prettyExpr = unK . hcata prettyExprF . relax
+-}
 
 -- ########################
 -- # Necessary injections #
@@ -1307,9 +1651,19 @@ instance HInject ExprMonadF (a :+: ExprMonadF :+: h) where
   hproject' (Inr (Inl a)) = Just a
   hproject' _ = Nothing
 
+instance HInject ExprMonadF (ExprMonadF :+: h) where
+  hinject' = Inl
+  hproject' (Inl a) = Just a
+  hproject' _ = Nothing
+
 instance HInject XExprF (a :+: b :+: XExprF :+: h) where
   hinject' = Inr . Inr . Inl
   hproject' (Inr (Inr (Inl a))) = Just a
+  hproject' _ = Nothing
+
+instance HInject ExprF (ExprF :+: h) where
+  hinject' = Inl
+  hproject' (Inl a) = Just a
   hproject' _ = Nothing
 
 instance HInject ExprF (a :+: ExprF :+: h) where
@@ -1322,9 +1676,24 @@ instance HInject ExprF (a :+: b :+: ExprF :+: h) where
   hproject' (Inr (Inr (Inl a))) = Just a
   hproject' _ = Nothing
 
+instance HInject ControlF (a :+: b :+: ControlF :+: h) where
+  hinject' = Inr . Inr . Inl
+  hproject' (Inr (Inr (Inl a))) = Just a
+  hproject' _ = Nothing
+
 instance HInject ControlF (a :+: b :+: c :+: ControlF :+: h) where
   hinject' = Inr . Inr . Inr . Inl
   hproject' (Inr (Inr (Inr (Inl a)))) = Just a
+  hproject' _ = Nothing
+
+instance HInject PrimF (a :+: b :+: PrimF) where
+  hinject' = Inr . Inr
+  hproject' (Inr (Inr a)) = Just a
+  hproject' _ = Nothing
+
+instance HInject PrimF (a :+: b :+: c :+: PrimF) where
+  hinject' = Inr . Inr . Inr
+  hproject' (Inr (Inr (Inr a))) = Just a
   hproject' _ = Nothing
 
 instance HInject PrimF (a :+: b :+: c :+: d :+: PrimF) where
@@ -1332,7 +1701,7 @@ instance HInject PrimF (a :+: b :+: c :+: d :+: PrimF) where
   hproject' (Inr (Inr (Inr (Inr a)))) = Just a
   hproject' _ = Nothing
 
-instance HInject NRedZoneF NCPSFuzzF where
+instance HInject NRedZoneF (a :+: MainF) where
   hinject' (Inl expr) = Inr (Inr (Inl expr))
   hinject' (Inr (Inl ctrl)) = Inr (Inr (Inr (Inl ctrl)))
   hinject' (Inr (Inr prim)) = Inr (Inr (Inr (Inr prim)))
@@ -1347,6 +1716,21 @@ instance HInject MainF (a :+: MainF) where
 
   hproject' (Inr a) = Just a
   hproject' _ = Nothing
+
+instance HInject (ExprF :+: ControlF :+: PrimF) MainF where
+  hinject' = Inr
+
+  hproject' (Inr a) = Just a
+  hproject' _ = Nothing
+
+instance HInject McsF (McsF :+: h) where
+  hinject' = Inl
+
+  hproject' (Inl a) = Just a
+  hproject' _ = Nothing
+
+-- not sure why this doesn't work
+--deriving via (DeriveHInjectTrans NRedZoneF MainF NMcsF) instance (HInject NRedZoneF NMcsF)
 
 -- ####################
 -- # Lenses to expose #

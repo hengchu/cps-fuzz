@@ -33,11 +33,40 @@ main = hspec $ do
     it "runs without error: ex5" $ do
       (flip evalStateT
            (nameState $ fvCPSFuzz example5)
-           (named' example3 >>= flatten))
+           (named' example5 >>= flatten))
       `shouldSatisfy` isRight
 
     it "runs without error: ex6" $ do
       (flip evalStateT
            (nameState $ fvCPSFuzz example6)
-           (named' example3 >>= flatten))
+           (named' example6 >>= flatten))
       `shouldSatisfy` isRight
+
+  describe "etaBetaReduce" $ do
+    it "converges: ex3" $ do
+      let a = seq (fromRight undefined $
+                     (flip evalStateT
+                      (nameState $ fvCPSFuzz example3)
+                      (named' example3 >>= return . etaBetaReduce))) ()
+      a `shouldBe` ()
+
+    it "converges: ex5" $ do
+      let a = seq (fromRight undefined $
+                     (flip evalStateT
+                      (nameState $ fvCPSFuzz example5)
+                      (named' example5 >>= return . etaBetaReduce))) ()
+      a `shouldBe` ()
+
+    it "converges: ex6" $ do
+      let a = seq (fromRight undefined $
+                     (flip evalStateT
+                      (nameState $ fvCPSFuzz example6)
+                      (named' example6 >>= return . etaBetaReduce))) ()
+      a `shouldBe` ()
+
+    it "converges: ex7" $ do
+      let a = seq (fromRight undefined $
+                     (flip evalStateT
+                      (nameState $ fvCPSFuzz example7)
+                      (named' example7 >>= return . etaBetaReduce))) ()
+      a `shouldBe` ()
