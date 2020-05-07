@@ -5,7 +5,10 @@ newtype K a b = K a
 
 newtype DeriveHXFunctor h f a = DeriveHXFunctor (h f a)
 
-newtype DeriveHInjectTrans h j l r a = DeriveHInjectTrans (h r a)
+newtype DeriveHInjectTrans
+  (h :: (* -> *) -> * -> *)
+  (j :: (* -> *) -> * -> *)
+  (l :: (* -> *) -> * -> *) r a = DeriveHInjectTrans (h r a)
 
 -- | This is right-associative so we can pattern match on the first type
 -- parameter in typeclass instances.
@@ -96,7 +99,7 @@ class HXFunctor (h :: (* -> *) -> * -> *) where
 instance HFunctor h => HXFunctor (DeriveHXFunctor h) where
   hxmap f _ (DeriveHXFunctor term) = DeriveHXFunctor $ hmap f term
 
-infixr 6 `sumAlg`
+infixr 6 `sumAlg`, `sumAlgM`
 
 infixr 7 `prodAlg`
 

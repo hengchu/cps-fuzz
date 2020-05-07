@@ -5,6 +5,7 @@ import Control.Monad.State.Strict
 import Data.Foldable
 import qualified Data.Map.Strict as M
 import Data.Semigroup
+import Text.Printf
 
 type NameMap = M.Map String Int
 
@@ -39,7 +40,7 @@ class Monad m => FreshM m where
       Just nextIdx -> do
         modifyNameState (\st -> st & globals %~ M.insert hint (nextIdx + 1))
         modifyNameState (\st -> st & locals %~ map (M.insert hint (nextIdx + 1)))
-        return (hint ++ show nextIdx)
+        return $ printf "%s_%d" hint nextIdx
 
   -- | Enter a new locally fresh context.
   lpush :: m ()
@@ -75,7 +76,7 @@ class Monad m => FreshM m where
         Just nextIdx -> do
           let c' = M.insert hint (nextIdx + 1) c
           modifyNameState (\st -> st & locals %~ (const $ c' : cs))
-          return (hint ++ show nextIdx)
+          return $ printf "%s_%d" hint nextIdx
 
 instance Monad m => FreshM (StateT NameState m) where
   getNameState = get

@@ -36,6 +36,9 @@ example5 = toDeepRepr @(CPSFuzz f) (\(N db :: Name "db" (CPSFuzz f _)) -> bag_fi
 example6 :: forall f. CPSFuzz f (Bag Number -> Number)
 example6 = toDeepRepr @(CPSFuzz f) (\(N db :: Name "db" (CPSFuzz f _)) -> needs_flatten db)
 
+example7 :: forall f. CPSFuzz f Bool
+example7 = app example3 1
+
 bag_filter_sum :: CPSFuzz f (Bag Number) -> CPSFuzz f Number
 bag_filter_sum db =
   bfilter gt_10 db $
