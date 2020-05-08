@@ -7,6 +7,7 @@ import Syntax
 import Text.PrettyPrint.ANSI.Leijen
 import Type.Reflection
 import HFunctor
+import Prelude hiding ((<$>))
 
 associativityTable :: String -> Int
 associativityTable "App" = 1
@@ -219,6 +220,16 @@ pPrimF (PSndF a) = P $ \prec ->
   in parensIf (prec > precedenceTable "App") $
      string "snd" <+> aDoc
 
+pMcsF :: McsF P a -> P a
+pMcsF (MRunF reprSize clip mf rf) = P $ \prec ->
+  let reprSizeDoc = int reprSize
+      clipDoc = parens . string . show $ clip
+      mfDoc = runPretty mf (precedenceTable "App" + associativityTable "App" * 2)
+      rfDoc = runPretty rf (precedenceTable "App" + associativityTable "App" * 3)
+  in flatAlt
+       (string "bmcs" <+> reprSizeDoc <+> clipDoc <+> mfDoc <+> rfDoc)
+       (string "bmcs" <+> reprSizeDoc <+> clipDoc <$> (nest 2 $ vcat [mfDoc, rfDoc]))
+
 pMainF :: MainF P a -> P a
 pMainF =
   pExprMonadF
@@ -232,8 +243,30 @@ pNCPSFuzzF = pBagOpF `sumAlg` pMainF
 pNNormalizedF :: NNormalizedF P a -> P a
 pNNormalizedF = pFlatBagOpF `sumAlg` pMainF
 
+pNMcsF :: NMcsF P a -> P a
+pNMcsF = pMcsF `sumAlg` pMainF
+
 pNNormalized :: HFix NNormalizedF a -> Doc
 pNNormalized = flip runPretty 0 . (hcata' pNNormalizedF)
 
 pNCPSFuzz :: HFix NCPSFuzzF a -> Doc
 pNCPSFuzz = flip runPretty 0 . (hcata' pNCPSFuzzF)
+
+pNMcs :: HFix NMcsF a -> Doc
+pNMcs = flip runPretty 0 . (hcata' pNMcsF)
+
+pRedZoneF :: NRedZoneF P a -> P a
+pRedZoneF =
+  pExprF `sumAlg` pControlF `sumAlg` pPrimF
+
+pRedZone :: HFix NRedZoneF a -> Doc
+pRedZone = flip runPretty 0 . (hcata' pRedZoneF)
+
+instance Show (HFix NCPSFuzzF a) where
+  show prog = displayS (renderPretty 0.6 80 (pNCPSFuzz prog)) ""
+
+instance Show (HFix NMcsF a) where
+  show prog = displayS (renderPretty 0.6 80 (pNMcs prog)) ""
+
+instance Show (HFix NNormalizedF a) where
+  show prog = displayS (renderPretty 0.6 80 (pNNormalized prog)) ""

@@ -1180,19 +1180,31 @@ etaReduceF term = Done term
 
 betaReduceF ::
   forall h a.
-  HInject ExprF h =>
+  (HInject ExprF h,
+   --forall a. Show (HFix h a),
+   HFunctor h
+   ) =>
   h (HFix h) a ->
   Progress (h (HFix h) a)
 betaReduceF term@(hproject' -> Just (EAppF f arg)) =
   case hproject' . unwrap $ f of
     Just (ELamF bound body) ->
-      Worked $ unwrap . substGenF bound arg $ unwrap body
+      {-
+      traceShow bound $
+      traceShow body $
+      traceShow arg $
+-}
+      let result = substGen bound arg body in
+      --traceShow result $
+      Worked . unwrap $ result
     _ -> Done term
 betaReduceF term = Done term
 
 etaBetaReduceF ::
   forall h a.
-  (HInject ExprF h, HFunctor h) =>
+  (HInject ExprF h, HFunctor h
+   --forall a. Show (HFix h a)
+  ) =>
   h (Compose Progress (HFix h)) a ->
   Compose Progress (HFix h) a
 etaBetaReduceF term =
@@ -1210,6 +1222,7 @@ etaBetaReduceStep ::
   forall h a.
   ( HInject ExprF h,
     HFunctor h
+    --forall a. Show (HFix h a)
   ) =>
   HFix h a ->
   Progress (HFix h a)
@@ -1220,6 +1233,7 @@ etaBetaReduce ::
   forall h a.
   ( HInject ExprF h,
     HFunctor h
+    --forall a. Show (HFix h a)
   ) =>
   HFix h a ->
   HFix h a
@@ -1228,13 +1242,14 @@ etaBetaReduce = untilConvergence etaBetaReduceStep
 monadReduceLeftF ::
   forall h a.
   ( HInject ExprMonadF h,
-    HInject ExprF h
+    HInject ExprF h,
+    HFunctor h
   ) =>
   h (HFix h) a ->
   Progress (h (HFix h) a)
 monadReduceLeftF term@(hproject' -> Just (EBindF m bound f)) =
   case hproject' . unwrap $ m of
-    Just (EReturnF a) -> Worked . unwrap $ substGenF bound a (unwrap f)
+    Just (EReturnF a) -> Worked . unwrap $ substGen bound a f
     _ -> Done term
 monadReduceLeftF term = Done term
 
@@ -1341,9 +1356,11 @@ substExprF ::
 substExprF (Var x) u (EVarF (Var x')) =
   if x == x'
     then case eqTypeRep (typeRep @a) (typeRep @b) of
-      Just HRefl -> u
-      _ -> wrap . hinject' $ EVarF (Var x')
-    else wrap . hinject' $ EVarF (Var x')
+      Just HRefl -> {-trace "success" $-} u
+      _ -> --trace (printf "type mismatch: %s %s" (show (typeRep @a)) (show (typeRep @b)) ) $
+           wrap . hinject' $ EVarF (Var x')
+    else --trace (printf "name mismatch: %s %s" x x') $
+         wrap . hinject' $ EVarF (Var x')
 substExprF _ _ t = wrap . hinject' $ t
 
 substGenF ::
@@ -1354,8 +1371,16 @@ substGenF ::
   HFix h b
 substGenF v u term =
   case hproject' @ExprF term of
-    Just expr -> substExprF v u expr
-    _ -> wrap term
+    Just expr -> {-trace "found expr" $ -}substExprF v u expr
+    _ -> {-trace "nope" $ -}wrap term
+
+substGen ::
+  (Typeable a, HInject ExprF h, HFunctor h) =>
+  Var a ->
+  HFix h a ->
+  HFix h b ->
+  HFix h b
+substGen v u term = hcata' (substGenF v u) term
 
 substF ::
   Typeable a =>
@@ -1373,9 +1398,6 @@ substF v u =
     recurse :: HInject h NCPSFuzzF => h (HFix NCPSFuzzF) a -> HFix NCPSFuzzF a
     recurse = wrap . hinject'
 
--- TODO: this is actually wrong... other bag operations also need to be
--- considered, because their continuations could capture and return bags from
--- outer operations.
 flattenF ::
   forall rest h h' a m.
   ( HInject BagOpF h,
@@ -1407,6 +1429,18 @@ flattenF (hproject' -> Just (BMapF mapFun inputDb kont)) =
               )
                 `compose` upperKont
         return . wrap . hinject' $ FBMapF mf upperDb newKont
+      Just (FBSumF clip upperDb upperKont) -> do
+        result <- gfresh "upper_bmap_result"
+        -- A variable that represents the result of the upper bmap
+        let var = Var result
+        let newKont =
+              ( wrap . hinject'
+                  $ ELamF var
+                  $ wrap . hinject'
+                  $ FBMapF mapFun var kont
+              )
+                `compose` upperKont
+        return . wrap . hinject' $ FBSumF clip upperDb newKont
       _ -> throwM' UnFlattenableTerm
 flattenF (hproject' -> Just (BSumF clip inputDb kont)) =
   case hproject' @ExprF . unwrap $ inputDb of
@@ -1424,6 +1458,18 @@ flattenF (hproject' -> Just (BSumF clip inputDb kont)) =
               )
                 `compose` upperKont
         return . wrap . hinject' $ FBMapF mf upperDb newKont
+      Just (FBSumF clip upperDb upperKont) -> do
+        result <- gfresh "upper_bmap_result"
+        -- A variable that represents the result of the upper bmap
+        let var = Var result
+        let newKont =
+              ( wrap . hinject'
+                  $ ELamF var
+                  $ wrap . hinject'
+                  $ FBSumF clip var kont
+              )
+                `compose` upperKont
+        return . wrap . hinject' $ FBSumF clip upperDb newKont
       _ -> throwM' UnFlattenableTerm
 flattenF (hproject' @rest -> Just term) = return . wrap . hinject' $ term
 flattenF _ = throwM' UnFlattenableTerm
@@ -1437,69 +1483,6 @@ fvMainF =
     `sumAlg` fvExprF
     `sumAlg` fvControlF
     `sumAlg` fvPrimF
-
-{-
--- We don't actually need the full generality of SwapFun. Just build up a map
--- from bound names to fresh names. This avoids some injections and projections.
-newtype SwapFun h
-  = SwapFun {runSwapFun :: forall a. HFix h a -> HFix h a}
-
-data DelayedSubst m h b
-  = DS
-      { _dsSubst :: SwapFun h -> m (HFix h b)
-      }
-
-makeLensesWith abbreviatedFields ''DelayedSubst
-
--- An algebra for capture avoiding substitution. At binding sites, we check if
--- the bound variable would be captured by the needle substituted into the
--- term. If so, we freshen the bound variable to a globally fresh one, and then
--- perform substitution.
-casubstExprF ::
-  forall a b h m.
-  ( Typeable a,
-    HInject ExprF h,
-    HInject ExprMonadF h,
-    FreshM m,
-    HFunctor h
-  ) =>
-  Var a ->
-  HFix h a ->
-  (forall a. HFix h a -> S.Set String) ->
-  ExprF (DelayedSubst m h) b ->
-  (DelayedSubst m h) b
-casubstExprF var@(Var x) needle fvFun (EVarF x') =
-  let raw = wrap . hinject' $ EVarF x'
-   in DS $
-        \(sf :: SwapFun h) -> return $
-          case (hproject' @ExprF @h . unwrap . runSwapFun sf $ raw) of
-            Just (EVarF (Var x')) ->
-              if x == x'
-                then case eqTypeRep (typeRep @a) (typeRep @b) of
-                  Just HRefl -> needle
-                  _ -> raw
-                else raw
-            _ -> raw -- this branch is dead code... swap fun should not change
-              -- constructor type.
-casubstExprF var@(Var x) needle fvFun (ELamF var'@(Var bound) body) =
-  DS $
-    \sf -> do
-      let fvs = fvFun needle
-      if bound `S.member` fvs
-        then do
-          bound' <- gfresh bound
-          body' <- (body ^. subst) (SwapFun $ swapGen bound bound' . runSwapFun sf)
-          return $ wrap . hinject' $ ELamF var' body'
-        else do
-          body' <- (body ^. subst) sf
-          return $ wrap . hinject' $ ELamF var' body'
-casubstExprF _ _ _ (EAppF a b) =
-  DS $
-    \sf -> do
-      a' <- (a ^. subst) sf
-      b' <- (b ^. subst) sf
-      return $ wrap . hinject' $ EAppF a' b'
--}
 
 -- ##################
 -- # INFRASTRUCTURE #
@@ -1621,29 +1604,6 @@ instance
   type DeepRepr (Mon (CPSFuzz f) Distr a) = Distr (DeepRepr a)
   toDeepRepr (Mon m) = m (xwrap . hinject' . XEReturnF . toDeepRepr)
   fromDeepRepr m = Mon $ \k -> xwrap . hinject' $ XEBindF @"shallowX" m (k . fromDeepRepr . unName)
-
--- Everything below this commment should be in its own module.
-
--- ##################
--- # Pretty Printer #
--- ##################
-
-instance Show (HFix NNormalizedF a) where
-  show _ = "show @(HFix NNormalizedF a): not yet implemented"
-
-{-
-prettyExprF ::
-  ExprF (K Doc) a ->
-  K Doc a
-prettyExprF (EVarF (Var x)) = K $ text x
-prettyExprF (ELamF (Var bound) body) =
-  K . parens $
-    text "\\" <> text bound <> text "." <+> unK body
-prettyExprF (EAppF (unK -> a) (unK -> b)) = K . parens $ a <+> b
-
-prettyExpr :: HFix ExprF a -> Doc
-prettyExpr = unK . hcata prettyExprF . relax
--}
 
 -- ########################
 -- # Necessary injections #

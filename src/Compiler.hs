@@ -15,6 +15,10 @@ import Names
 import Syntax
 import Text.Printf
 import Type.Reflection
+import Control.Monad.State.Strict
+import Pretty
+import Debug.Trace
+import Text.PrettyPrint.ANSI.Leijen hiding ((<$>))
 
 data Edge from to where
   Map :: HFix NRedZoneF (from -> to) -> Edge (Bag from) (Bag to)
@@ -176,13 +180,19 @@ data SIMDFusion f t where
     SIMD f t ->
     SIMDFusion (fs, f) (ts, t)
 
+data MisplacedMsg = MisplacedMsg
+
+instance Show MisplacedMsg where
+  show _ = "\nI've tried to simplify as much as possible, but there are bag operations that cannot be lifted to the top of the program.\nI do not know how to compile such a program.\nPlease rewrite the following program fragment.\n"
+
 data CompilerError
   = InternalError String
   | -- | Cannot find the computation step for computing `from` to `to.
     NoSuchEdge {from :: String, to :: String}
   | -- | The clip bound has incorrect representation size.
     ClipSizeError {expectedSize :: Int, observedSize :: Int}
-  | UnsupportedRedZoneTerm --TODO: put a pretty-printed version here.
+  | UnsupportedRedZoneTerm Doc
+  | MisplacedBagOp MisplacedMsg Doc
   | -- | We need a type that satisfies `Clip`, but
     --  instead got this.
     RequiresClip SomeTypeRep
@@ -275,7 +285,7 @@ combine (unK -> g) term = do
         Just mf' -> do
           g' <- insert g (input, output) (Map mf')
           return $ Eff g' term
-        _ -> throwM' $ UnsupportedRedZoneTerm
+        _ -> throwM' $ UnsupportedRedZoneTerm (pNNormalized mf)
     Just (FBSumF clip (Var input) kont) -> do
       (Var output, _) <- openM kont
       g' <- insert @(Bag Number) @Number g (input, output) (Sum clip)
@@ -364,8 +374,6 @@ effects ::
   m (Effect a)
 effects =
   hcataM' (prodAlgWithM traceGraphF (return . wrap) combine . hmap unpackEffect)
-    . etaBetaReduce
-    . monadReduce
 
 deflateFlatBagOpF ::
   MonadThrowWithStack m =>
@@ -389,14 +397,105 @@ deflateF =
     `sumAlgM` return . wrap . hinject'
     `sumAlgM` return . wrap . hinject'
 
-deflate ::
+deflateM ::
   MonadThrowWithStack m =>
   HFix NNormalizedF a ->
   m (HFix MainF a)
-deflate = hcataM' deflateF
+deflateM = hcataM' deflateF
 
 data SecurityLevel = Public | Private
   deriving (Show, Eq, Ord)
+
+data UsesBagOp = No | Yes | Bad
+  deriving (Show)
+
+instance Semigroup UsesBagOp where
+  No <> a = a
+  Bad <> _ = Bad
+  _ <> Bad = Bad
+  Yes <> _ = Yes
+
+instance Monoid UsesBagOp where
+  mempty = No
+
+data TermShapeCheck a = TSC {
+  _tscUsesBagOp :: UsesBagOp,
+  _tscPrettified :: P a
+  }
+
+makeLensesWith abbreviatedFields ''TermShapeCheck
+
+termShapeCheck :: MonadThrowWithStack m => HFix NNormalizedF a -> m (TermShapeCheck a)
+termShapeCheck = hcataM' $
+  prodAlgWithM (return . termShapeF) (return . pNNormalizedF) combineTermShapeCheck
+  . hmap unpackTermShapeCheck
+
+combineTermShapeCheck :: MonadThrowWithStack m => K UsesBagOp a -> P a -> m (TermShapeCheck a)
+combineTermShapeCheck (K Bad) p =
+  throwM' $ MisplacedBagOp MisplacedMsg (runPretty p 0)
+combineTermShapeCheck a b = return $ TSC (unK a) b
+
+unpackTermShapeCheck :: TermShapeCheck a -> ((K UsesBagOp) :* P) a
+unpackTermShapeCheck (TSC a b) = (K a) `Prod` b
+
+termShapeF :: NNormalizedF (K UsesBagOp) a -> K UsesBagOp a
+termShapeF =
+  termShapeFlatBagOpF
+  `sumAlg` termShapeExprMonadF
+  `sumAlg` termShapeExprF
+  `sumAlg` termShapeControlF
+  `sumAlg` termShapePrimF
+
+termShapeFlatBagOpF :: FlatBagOpF (K UsesBagOp) a -> K UsesBagOp a
+termShapeFlatBagOpF _ = K Yes
+
+termShapeExprMonadF :: ExprMonadF (K UsesBagOp) a -> K UsesBagOp a
+termShapeExprMonadF (EReturnF (unK -> s)) =
+  case s of
+    Yes -> K Bad
+    _ -> K s
+termShapeExprMonadF (EBindF (unK -> s) _ _) =
+  case s of
+    Yes -> K Bad
+    _ -> K s
+termShapeExprMonadF (ELaplaceF _ (unK -> s)) =
+  case s of
+    Yes -> K Bad
+    _ -> K s
+
+termShapeExprF :: ExprF (K UsesBagOp) a -> K UsesBagOp a
+termShapeExprF (EVarF _) = K No
+termShapeExprF (ELamF _ (unK -> s)) = K s
+termShapeExprF (EAppF (unK -> a) (unK -> b)) = K $ a <> b
+termShapeExprF (ECompF (unK -> a) (unK -> b)) = K $ a <> b
+
+termShapeControlF :: ControlF (K UsesBagOp) a -> K UsesBagOp a
+termShapeControlF (CIfF (unK -> a) (unK -> b) (unK -> c)) = K $ a <> b <> c
+
+termShapePrimF :: PrimF (K UsesBagOp) a -> K UsesBagOp a
+termShapePrimF (PLitF _) = K No
+termShapePrimF (PAddF (unK -> a) (unK -> b)) = K $ a <> b
+termShapePrimF (PSubF (unK -> a) (unK -> b)) = K $ a <> b
+termShapePrimF (PMultF (unK -> a) (unK -> b)) = K $ a <> b
+termShapePrimF (PDivF (unK -> a) (unK -> b)) = K $ a <> b
+termShapePrimF (PAbsF (unK -> a)) = K a
+termShapePrimF (PSignumF (unK -> a)) = K a
+termShapePrimF (PExpF (unK -> a)) = K a
+termShapePrimF (PSqrtF (unK -> a)) = K a
+termShapePrimF (PLogF (unK -> a)) = K a
+termShapePrimF (PGTF (unK -> a) (unK -> b)) = K $ a <> b
+termShapePrimF (PGEF (unK -> a) (unK -> b)) = K $ a <> b
+termShapePrimF (PLTF (unK -> a) (unK -> b)) = K $ a <> b
+termShapePrimF (PLEF (unK -> a) (unK -> b)) = K $ a <> b
+termShapePrimF (PEQF (unK -> a) (unK -> b)) = K $ a <> b
+termShapePrimF (PNEQF (unK -> a) (unK -> b)) = K $ a <> b
+termShapePrimF (PJustF (unK -> a)) = K a
+termShapePrimF PNothingF = K No
+termShapePrimF (PFromJustF (unK -> a)) = K a
+termShapePrimF (PIsJustF (unK -> a)) = K a
+termShapePrimF (PPairF (unK -> a) (unK -> b)) = K $ a <> b
+termShapePrimF (PFstF (unK -> a)) = K a
+termShapePrimF (PSndF (unK -> a)) = K a
 
 isPublic :: SecurityLevel -> Bool
 isPublic Public = True
@@ -415,19 +514,23 @@ data DelayedInflate m a
 prjFvs :: DelayedInflate m a -> K (S.Set String) a
 prjFvs (DelayedInflate fvs _ _) = K fvs
 
+prjOriginal :: DelayedInflate m a -> HFix MainF a
+prjOriginal (DelayedInflate _ t _) = t
+
 makeLensesWith abbreviatedFields ''DelayedInflate
 
 fuseMapPaths ::
   forall (row :: *) r m.
-  (Typeable row, FreshM m, MonadThrowWithStack m) =>
+  (Typeable row, MonadThrowWithStack m) =>
+  String ->
   String ->
   [(String, SomeTypeRep)] ->
   EffectGraph ->
   (forall fs ts. (Typeable fs, Typeable ts) => SIMDFusion fs ts -> m r) ->
   m r
-fuseMapPaths _db [] _g _kont =
+fuseMapPaths _db _dbrowName [] _g _kont =
   throwM' . InternalError $ "fuseMapPaths: expecting at least 1 free variable"
-fuseMapPaths db [(x, xTR)] g kont =
+fuseMapPaths db dbrowName [(x, xTR)] g kont =
   case xTR of
     SomeTypeRep (xDbType :: TypeRep xDbType) ->
       withTypeable xDbType
@@ -436,18 +539,18 @@ fuseMapPaths db [(x, xTR)] g kont =
         $ \(_ :: Proxy xRowType) ->
           withKindStar @_ @xDbType $ do
             f <- pullMapEffectsTrans' @row @xRowType g db x
-            kont (SIMD1 $ simd f db x)
-fuseMapPaths db ((x, xTR) : xs) g kont = do
-  fuseMapPaths @row db [(x, xTR)] g $
+            kont (SIMD1 $ simd f dbrowName x)
+fuseMapPaths db dbrowName ((x, xTR) : xs) g kont = do
+  fuseMapPaths @row db dbrowName [(x, xTR)] g $
     \case
       SIMD1 (SIMD f from to) ->
-        fuseMapPaths @row db xs g $
+        fuseMapPaths @row db dbrowName xs g $
           \fusionXs -> kont (fuse fusionXs f from to)
       _ -> throwM' . InternalError $ "fuseMapPaths: expected SIMD1 here"
 
 inflateExprMonadF ::
   forall (row :: *) a m.
-  (Typeable row, Typeable a, FreshM m, MonadThrowWithStack m) =>
+  (Typeable row, FreshM m, MonadThrowWithStack m) =>
   EffectGraph ->
   String ->
   ExprMonadF (DelayedInflate m) a ->
@@ -481,7 +584,6 @@ inflateExprMonadF g db term@(ELaplaceF w c) =
                 throwM' . InternalError $ "inflateExprMonadF: laplace center is not a pure term?!"
             let privateSources = S.toList $ cFvs `S.difference` released
             privateSourceTypes <- traverse (getType $ g ^. types) privateSources
-            let sourceTerms = M.fromList [(db, AnyRedZone (wrap . hinject' $ EVarF @row (Var db)))]
             privateSourceParents <- traverse (getParent $ g ^. parents) privateSources
             parentTypes <- traverse (getType $ g ^. types) privateSourceParents
             let parentWithTypes = nub $ zip privateSourceParents parentTypes
@@ -490,31 +592,34 @@ inflateExprMonadF g db term@(ELaplaceF w c) =
               [] ->
                 throwM' . InternalError $
                   "inflateExprMonadF: impossible, we should have at least 1 private source here"
-              _ ->
-                let dbrowName = printf "%s_row" db
-                 in fuseMapPaths @row dbrowName parentWithTypes g $
-                      \(fusion :: SIMDFusion fs ts) -> do
-                        mf <- inject' <$> fusedMapFunction fusion
-                        fusedInput <- injectSimd sourceTerms fusion
-                        let inj = wrap . hinject' @_ @NMcsF $ ELamF @row (Var dbrowName) (inject' @_ @NMcsF fusedInput)
-                        orangeInputName <- gfresh "orange_input"
-                        let oi = Var @ts orangeInputName
-                        let oiTerm = wrap . hinject' $ EVarF oi
-                        releaseTerm <-
-                          inject' @_ @NMcsF
-                            <$> foldM (substWithProjection fusion oiTerm) cPure pvSrcTypeParents
-                        let rls :: HFix NMcsF (ts -> Distr Number)
-                            rls =
-                              wrap . hinject' @_ @NMcsF $
-                                ELamF oi (wrap . hinject' @_ @NMcsF $ ELaplaceF w releaseTerm)
-                        case resolveClip @ts of
-                          Nothing -> throwM' $ RequiresClip (SomeTypeRep (typeRep @ts))
-                          Just dict ->
-                            withDict dict $ do
-                              let term =
-                                    wrap . hinject' @_ @NMcsF $
-                                      MRunF (vecSize @ts) (Vec [0]) (mf `compose` inj) rls
-                              return (Public, term)
+              _ -> do
+                dbrowName <- gfresh $ printf "%s_row" db
+                let sourceTerms = M.fromList [(dbrowName,
+                                               AnyRedZone (wrap . hinject' $ EVarF @row (Var dbrowName)))]
+                fuseMapPaths @row db dbrowName parentWithTypes g $
+                  \(fusion :: SIMDFusion fs ts) -> do
+                    mf <- inject' <$> fusedMapFunction fusion
+                    fusedInput <- injectSimd sourceTerms fusion
+                    let inj = wrap . hinject' @_ @NMcsF $
+                              ELamF @row (Var dbrowName) (inject' @_ @NMcsF fusedInput)
+                    orangeInputName <- gfresh "orange_input"
+                    let oi = Var @ts orangeInputName
+                    let oiTerm = wrap . hinject' $ EVarF oi
+                    releaseTerm <-
+                      inject' @_ @NMcsF
+                        <$> foldM (substWithProjection fusion oiTerm) cPure pvSrcTypeParents
+                    let rls :: HFix NMcsF (ts -> Distr Number)
+                        rls =
+                          wrap . hinject' @_ @NMcsF $
+                            ELamF oi (wrap . hinject' @_ @NMcsF $ ELaplaceF w releaseTerm)
+                    case resolveClip @ts of
+                      Nothing -> throwM' $ RequiresClip (SomeTypeRep (typeRep @ts))
+                      Just dict ->
+                        withDict dict $ do
+                          let term =
+                                wrap . hinject' @_ @NMcsF $
+                                  MRunF (vecSize @ts) (Vec [0]) (mf `compose` inj) rls
+                          return (Public, term)
   where
     getParent parents x =
       case M.lookup x parents of
@@ -545,6 +650,69 @@ inflateExprMonadF g db term@(ELaplaceF w c) =
               projFun <- projectSimd @_ @ts @srcTy srcParent fusion
               return $ hcata' (substGenF (Var @srcTy src) (projFun releaseInput)) releaseTerm
 
+inflateGenF ::
+  (HInject h MainF, HFunctor h, Monad m) =>
+  (h (K (S.Set String)) a -> K (S.Set String) a) ->
+  h (DelayedInflate m) a ->
+  DelayedInflate m a
+inflateGenF fvAlgF term =
+  let K fvs = fvAlgF . hmap prjFvs $ term
+      ogTerm = wrap . hinject' . hmap prjOriginal $ term
+  in DelayedInflate fvs ogTerm $ \released -> do
+    let secLvl = if fvs `S.isSubsetOf` released then Public else Private
+    return (secLvl, inject' ogTerm)
+
+inflateF :: forall (row :: *) a m.
+  (Typeable row,
+   MonadThrowWithStack m,
+   FreshM m) =>
+  EffectGraph ->
+  String ->
+  MainF (DelayedInflate m) a ->
+  DelayedInflate m a
+inflateF g db =
+  inflateExprMonadF @row g db
+  `sumAlg` inflateGenF fvExprF
+  `sumAlg` inflateGenF fvControlF
+  `sumAlg` inflateGenF fvPrimF
+
+inflateM :: forall (row :: *) a m.
+  (Typeable row,
+   MonadThrowWithStack m,
+   FreshM m) =>
+  EffectGraph ->
+  String ->
+  HFix MainF a ->
+  m (SecurityLevel, HFix NMcsF a)
+inflateM g db term = do
+  let g' = g & types %~ M.insert db (SomeTypeRep (typeRep @(Bag row)))
+  let act = hcata' (inflateF @row g' db) term
+  (act ^. inflate) S.empty
+
+compileM ::
+  forall row a m.
+  (FreshM m, MonadThrowWithStack m, Typeable row, Typeable a) =>
+  String ->
+  (forall f. HXFix CPSFuzzF f (Bag row) -> HXFix CPSFuzzF f (Distr a)) ->
+  m (HFix NMcsF (Distr a))
+compileM db prog = do
+  namedTerm <- named' $ prog (xwrap . hinject' $ XEVarF db)
+  flatTerm <- flatten namedTerm
+  let simpleTerm = monadReduce . etaBetaReduce $ flatTerm
+  termShapeCheck simpleTerm
+  eff <- effects simpleTerm
+  deflatedTerm <- deflateM $ eff ^. normalized
+  (_secLvl, term) <- inflateM @row (eff ^. graph) db deflatedTerm
+  -- TODO: log a warning message about secLvl if it's private?
+  return term
+
+compile ::
+  (Typeable row, Typeable a) =>
+  String ->
+  (forall f. HXFix CPSFuzzF f (Bag row) -> HXFix CPSFuzzF f (Distr a)) ->
+  Either SomeException (HFix NMcsF (Distr a))
+compile db prog = flip evalStateT (nameState [db]) (compileM db prog)
+
 pullMapEffectsTrans' ::
   forall (row1 :: *) (row2 :: *) m.
   (MonadThrowWithStack m, Typeable row1, Typeable row2) =>
@@ -555,6 +723,7 @@ pullMapEffectsTrans' ::
 pullMapEffectsTrans' g from to =
   case M.lookup to (g ^. parents) of
     Nothing ->
+      traceShow (from, to) $
       throwM' . InternalError $
         printf "pullMapEffectsTrans': orphaned node %s" to
     Just p ->

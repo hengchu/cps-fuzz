@@ -53,35 +53,6 @@ main = hspec $ do
            (named' example6 >>= flatten))
       `shouldSatisfy` isRight
 
-  describe "etaBetaReduce" $ do
-    it "converges: ex3" $ do
-      let a = seq (fromRight undefined $
-                     (flip evalStateT
-                      (nameState $ fvCPSFuzz example3)
-                      (named' example3 >>= return . etaBetaReduce))) ()
-      a `shouldBe` ()
-
-    it "converges: ex5" $ do
-      let a = seq (fromRight undefined $
-                     (flip evalStateT
-                      (nameState $ fvCPSFuzz example5)
-                      (named' example5 >>= return . etaBetaReduce))) ()
-      a `shouldBe` ()
-
-    it "converges: ex6" $ do
-      let a = seq (fromRight undefined $
-                     (flip evalStateT
-                      (nameState $ fvCPSFuzz example6)
-                      (named' example6 >>= return . etaBetaReduce))) ()
-      a `shouldBe` ()
-
-    it "converges: ex7" $ do
-      let a = seq (fromRight undefined $
-                     (flip evalStateT
-                      (nameState $ fvCPSFuzz example7)
-                      (named' example7 >>= return . etaBetaReduce))) ()
-      a `shouldBe` ()
-
   describe "pNCPSFuzz" $ do
     it "prints example1 properly" $ example $ do
       putStrLn "=============================="
@@ -139,32 +110,3 @@ main = hspec $ do
     it "prints example7 properly" $ example $ do
       putStrLn "=============================="
       putDoc (pNNormalized $ runNamedFlatten example7)
-
-  describe "pNCPSFuzz . etaBetaReduce" $ do
-    it "prints example1 properly" $ example $ do
-      putStrLn "=============================="
-      putDoc (pNCPSFuzz . etaBetaReduce $ runNamed example1)
-
-    it "prints example2 properly" $ example $ do
-      putStrLn "=============================="
-      putDoc (pNCPSFuzz . etaBetaReduce $ runNamed example2)
-
-    it "prints example3 properly" $ example $ do
-      putStrLn "=============================="
-      putDoc (pNCPSFuzz . etaBetaReduce $ runNamed example3)
-
-    it "prints example4 properly" $ example $ do
-      putStrLn "=============================="
-      putDoc (pNCPSFuzz . etaBetaReduce $ runNamed example4)
-
-    it "prints example5 properly" $ example $ do
-      putStrLn "=============================="
-      putDoc (pNCPSFuzz . etaBetaReduce $ runNamed example5)
-
-    it "prints example6 properly" $ example $ do
-      putStrLn "=============================="
-      putDoc (pNCPSFuzz . etaBetaReduce $ runNamed example6)
-
-    it "prints example7 properly" $ example $ do
-      putStrLn "=============================="
-      putDoc (pNCPSFuzz . etaBetaReduce $ runNamed example7)
