@@ -1180,30 +1180,31 @@ etaReduceF term = Done term
 
 betaReduceF ::
   forall h a.
-  (HInject ExprF h,
-   --forall a. Show (HFix h a),
-   HFunctor h
-   ) =>
+  ( HInject ExprF h,
+    --forall a. Show (HFix h a),
+    HFunctor h
+  ) =>
   h (HFix h) a ->
   Progress (h (HFix h) a)
 betaReduceF term@(hproject' -> Just (EAppF f arg)) =
   case hproject' . unwrap $ f of
     Just (ELamF bound body) ->
       {-
-      traceShow bound $
-      traceShow body $
-      traceShow arg $
--}
-      let result = substGen bound arg body in
-      --traceShow result $
-      Worked . unwrap $ result
+            traceShow bound $
+            traceShow body $
+            traceShow arg $
+      -}
+      let result = substGen bound arg body
+       in --traceShow result $
+          Worked . unwrap $ result
     _ -> Done term
 betaReduceF term = Done term
 
 etaBetaReduceF ::
   forall h a.
-  (HInject ExprF h, HFunctor h
-   --forall a. Show (HFix h a)
+  ( HInject ExprF h,
+    HFunctor h
+    --forall a. Show (HFix h a)
   ) =>
   h (Compose Progress (HFix h)) a ->
   Compose Progress (HFix h) a
@@ -1356,11 +1357,13 @@ substExprF ::
 substExprF (Var x) u (EVarF (Var x')) =
   if x == x'
     then case eqTypeRep (typeRep @a) (typeRep @b) of
-      Just HRefl -> {-trace "success" $-} u
-      _ -> --trace (printf "type mismatch: %s %s" (show (typeRep @a)) (show (typeRep @b)) ) $
-           wrap . hinject' $ EVarF (Var x')
-    else --trace (printf "name mismatch: %s %s" x x') $
-         wrap . hinject' $ EVarF (Var x')
+      Just HRefl ->
+        {-trace "success" $-} u
+      _ ->
+        --trace (printf "type mismatch: %s %s" (show (typeRep @a)) (show (typeRep @b)) ) $
+        wrap . hinject' $ EVarF (Var x')
+    else--trace (printf "name mismatch: %s %s" x x') $
+      wrap . hinject' $ EVarF (Var x')
 substExprF _ _ t = wrap . hinject' $ t
 
 substGenF ::
@@ -1371,8 +1374,9 @@ substGenF ::
   HFix h b
 substGenF v u term =
   case hproject' @ExprF term of
-    Just expr -> {-trace "found expr" $ -}substExprF v u expr
-    _ -> {-trace "nope" $ -}wrap term
+    Just expr ->
+      {-trace "found expr" $ -} substExprF v u expr
+    _ -> {-trace "nope" $ -} wrap term
 
 substGen ::
   (Typeable a, HInject ExprF h, HFunctor h) =>

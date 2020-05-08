@@ -41,7 +41,9 @@ example7 = app example3 1
 
 bag_filter_sum ::
   Typeable r =>
-  CPSFuzz f (Bag Number) -> (CPSFuzz f Number -> CPSFuzz f r) -> CPSFuzz f r
+  CPSFuzz f (Bag Number) ->
+  (CPSFuzz f Number -> CPSFuzz f r) ->
+  CPSFuzz f r
 bag_filter_sum db k =
   bfilter gt_10 db $
     \($(named "gt_10_db")) -> bmapNothing 0 gt_10_db $
@@ -66,10 +68,10 @@ needs_flatten db =
 bag_filter_sum_noise :: forall f. CPSFuzz f (Bag Number) -> CPSFuzz f (Distr Number)
 bag_filter_sum_noise db =
   bag_filter_sum db $
-  \filter_sum -> do
-    $(named "s1'") <- lap 1.0 filter_sum
-    $(named "s2'") <- lap 2.0 filter_sum
-    return (s1' + s2')
+    \filter_sum -> do
+      $(named "s1'") <- lap 1.0 filter_sum
+      $(named "s2'") <- lap 2.0 filter_sum
+      return (s1' + s2')
 
 bag_filter_sum_noise2 :: forall f. CPSFuzz f (Bag Number) -> CPSFuzz f (Distr Number)
 bag_filter_sum_noise2 db =
@@ -80,14 +82,13 @@ bag_filter_sum_noise2 db =
           \($(named "lt_5_db")) -> bmapNothing 0 lt_5_db $
             \($(named "lt_5_db")) -> bsum 5 lt_5_db $
               \($(named "lt_5_sum")) -> do
-              let filter_sum = lt_5_sum + gt_10_sum
-              $(named "s1'") <- lap 1.0 filter_sum
-              $(named "s2'") <- lap 2.0 s1'
-              return (s1' + s2')
+                let filter_sum = lt_5_sum + gt_10_sum
+                $(named "s1'") <- lap 1.0 filter_sum
+                $(named "s2'") <- lap 2.0 s1'
+                return (s1' + s2')
   where
     gt_10 :: Name "row" (CPSFuzz f Number) -> CPSFuzz f Bool
     gt_10 (N v) = v %> 10
-
     lt_5 :: Name "row" (CPSFuzz f Number) -> CPSFuzz f Bool
     lt_5 (N v) = v %< 5
 
@@ -95,22 +96,20 @@ bag_filter_sum_noise3 :: forall f. CPSFuzz f (Bag Number) -> CPSFuzz f (Distr Nu
 bag_filter_sum_noise3 db =
   bfilter gt_10 db $
     \($(named "gt_10_db")) -> bmapNothing 0 gt_10_db $
-    \($(named "gt_10_db")) -> bsum 20 gt_10_db $
-    \($(named "gt_10_sum")) -> do
-      $(named "s1'") <- lap 1.0 gt_10_sum
-      bfilter lt_5 db $
-        \($(named "lt_5_db")) -> bmapNothing 0 lt_5_db $
-        \($(named "lt_5_db")) -> bsum 5 lt_5_db $
-        \($(named "lt_5_sum")) -> do
-          $(named "s2'") <- lap 2.0 lt_5_sum
-          return (s1' + s2')
+      \($(named "gt_10_db")) -> bsum 20 gt_10_db $
+        \($(named "gt_10_sum")) -> do
+          $(named "s1'") <- lap 1.0 gt_10_sum
+          bfilter lt_5 db $
+            \($(named "lt_5_db")) -> bmapNothing 0 lt_5_db $
+              \($(named "lt_5_db")) -> bsum 5 lt_5_db $
+                \($(named "lt_5_sum")) -> do
+                  $(named "s2'") <- lap 2.0 lt_5_sum
+                  return (s1' + s2')
   where
     gt_10 :: Name "row" (CPSFuzz f Number) -> CPSFuzz f Bool
     gt_10 (N v) = v %> 10
-
     lt_5 :: Name "row" (CPSFuzz f Number) -> CPSFuzz f Bool
     lt_5 (N v) = v %< 5
-
 
 -- #######################
 -- # FUNNY SYNTAX TRICKS #

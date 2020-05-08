@@ -5,20 +5,20 @@ module Compiler where
 import Control.Lens
 import Control.Monad
 import Control.Monad.Catch
+import Control.Monad.State.Strict
 import Data.Constraint
 import Data.List (nub)
 import qualified Data.Map.Strict as M
 import Data.Proxy
 import qualified Data.Set as S
+import Debug.Trace
 import HFunctor
 import Names
+import Pretty
 import Syntax
+import Text.PrettyPrint.ANSI.Leijen hiding ((<$>))
 import Text.Printf
 import Type.Reflection
-import Control.Monad.State.Strict
-import Pretty
-import Debug.Trace
-import Text.PrettyPrint.ANSI.Leijen hiding ((<$>))
 
 data Edge from to where
   Map :: HFix NRedZoneF (from -> to) -> Edge (Bag from) (Bag to)
@@ -418,17 +418,19 @@ instance Semigroup UsesBagOp where
 instance Monoid UsesBagOp where
   mempty = No
 
-data TermShapeCheck a = TSC {
-  _tscUsesBagOp :: UsesBagOp,
-  _tscPrettified :: P a
-  }
+data TermShapeCheck a
+  = TSC
+      { _tscUsesBagOp :: UsesBagOp,
+        _tscPrettified :: P a
+      }
 
 makeLensesWith abbreviatedFields ''TermShapeCheck
 
 termShapeCheck :: MonadThrowWithStack m => HFix NNormalizedF a -> m (TermShapeCheck a)
-termShapeCheck = hcataM' $
-  prodAlgWithM (return . termShapeF) (return . pNNormalizedF) combineTermShapeCheck
-  . hmap unpackTermShapeCheck
+termShapeCheck =
+  hcataM' $
+    prodAlgWithM (return . termShapeF) (return . pNNormalizedF) combineTermShapeCheck
+      . hmap unpackTermShapeCheck
 
 combineTermShapeCheck :: MonadThrowWithStack m => K UsesBagOp a -> P a -> m (TermShapeCheck a)
 combineTermShapeCheck (K Bad) p =
@@ -441,10 +443,10 @@ unpackTermShapeCheck (TSC a b) = (K a) `Prod` b
 termShapeF :: NNormalizedF (K UsesBagOp) a -> K UsesBagOp a
 termShapeF =
   termShapeFlatBagOpF
-  `sumAlg` termShapeExprMonadF
-  `sumAlg` termShapeExprF
-  `sumAlg` termShapeControlF
-  `sumAlg` termShapePrimF
+    `sumAlg` termShapeExprMonadF
+    `sumAlg` termShapeExprF
+    `sumAlg` termShapeControlF
+    `sumAlg` termShapePrimF
 
 termShapeFlatBagOpF :: FlatBagOpF (K UsesBagOp) a -> K UsesBagOp a
 termShapeFlatBagOpF _ = K Yes
@@ -550,9 +552,10 @@ fuseMapPaths db dbrowName ((x, xTR) : xs) g kont = do
 
 buildReleaseTerm ::
   forall (row :: *) r m.
-  (Typeable row,
-   MonadThrowWithStack m,
-   FreshM m) =>
+  ( Typeable row,
+    MonadThrowWithStack m,
+    FreshM m
+  ) =>
   S.Set String ->
   EffectGraph ->
   String ->
@@ -571,17 +574,22 @@ buildReleaseTerm released g db cFvs cPure build k = do
   case privateSources of
     [] ->
       throwM' . InternalError $
-      "inflateExprMonadF: impossible, we should have at least 1 private source here"
+        "inflateExprMonadF: impossible, we should have at least 1 private source here"
     _ -> do
       dbrowName <- gfresh $ printf "%s_row" db
-      let sourceTerms = M.fromList [(dbrowName,
-                                     AnyRedZone (wrap . hinject' $ EVarF @row (Var dbrowName)))]
+      let sourceTerms =
+            M.fromList
+              [ ( dbrowName,
+                  AnyRedZone (wrap . hinject' $ EVarF @row (Var dbrowName))
+                )
+              ]
       fuseMapPaths @row db dbrowName parentWithTypes g $
         \(fusion :: SIMDFusion fs ts) -> do
           mf <- inject' <$> fusedMapFunction fusion
           fusedInput <- injectSimd sourceTerms fusion
-          let inj = wrap . hinject' @_ @NMcsF $
-                    ELamF @row (Var dbrowName) (inject' @_ @NMcsF fusedInput)
+          let inj =
+                wrap . hinject' @_ @NMcsF $
+                  ELamF @row (Var dbrowName) (inject' @_ @NMcsF fusedInput)
           orangeInputName <- gfresh "orange_input"
           let oi = Var @ts orangeInputName
           let oiTerm = wrap . hinject' $ EVarF oi
@@ -596,7 +604,7 @@ buildReleaseTerm released g db cFvs cPure build k = do
           case resolveClip @ts of
             Just dict ->
               withDict dict $
-              k (vecSize @ts) clipBounds (mf `compose` inj) rls
+                k (vecSize @ts) clipBounds (mf `compose` inj) rls
             _ -> throwM' $ RequiresClip (SomeTypeRep (typeRep @ts))
   where
     getParent parents x =
@@ -674,28 +682,32 @@ inflateGenF ::
 inflateGenF fvAlgF term =
   let K fvs = fvAlgF . hmap prjFvs $ term
       ogTerm = wrap . hinject' . hmap prjOriginal $ term
-  in DelayedInflate fvs ogTerm $ \released -> do
-    let secLvl = if fvs `S.isSubsetOf` released then Public else Private
-    return (secLvl, inject' ogTerm)
+   in DelayedInflate fvs ogTerm $ \released -> do
+        let secLvl = if fvs `S.isSubsetOf` released then Public else Private
+        return (secLvl, inject' ogTerm)
 
-inflateF :: forall (row :: *) a m.
-  (Typeable row,
-   MonadThrowWithStack m,
-   FreshM m) =>
+inflateF ::
+  forall (row :: *) a m.
+  ( Typeable row,
+    MonadThrowWithStack m,
+    FreshM m
+  ) =>
   EffectGraph ->
   String ->
   MainF (DelayedInflate m) a ->
   DelayedInflate m a
 inflateF g db =
   inflateExprMonadF @row g db
-  `sumAlg` inflateGenF fvExprF
-  `sumAlg` inflateGenF fvControlF
-  `sumAlg` inflateGenF fvPrimF
+    `sumAlg` inflateGenF fvExprF
+    `sumAlg` inflateGenF fvControlF
+    `sumAlg` inflateGenF fvPrimF
 
-inflateM :: forall (row :: *) a m.
-  (Typeable row,
-   MonadThrowWithStack m,
-   FreshM m) =>
+inflateM ::
+  forall (row :: *) a m.
+  ( Typeable row,
+    MonadThrowWithStack m,
+    FreshM m
+  ) =>
   EffectGraph ->
   String ->
   HFix MainF a ->
@@ -739,9 +751,9 @@ pullMapEffectsTrans' ::
 pullMapEffectsTrans' g from to =
   case M.lookup to (g ^. parents) of
     Nothing ->
-      traceShow (from, to) $
-      throwM' . InternalError $
-        printf "pullMapEffectsTrans': orphaned node %s" to
+      traceShow (from, to)
+        $ throwM' . InternalError
+        $ printf "pullMapEffectsTrans': orphaned node %s" to
     Just p ->
       if p == from
         then pullMapEffectsStep' @row1 @row2 g from to
@@ -798,15 +810,16 @@ pullClipSumBounds' ::
 pullClipSumBounds' g dirs = do
   bounds <- mapM go dirs
   return $ foldr vecConcat (Vec []) bounds
-  where go ((t, tr), f) =
-          case tr of
-            SomeTypeRep (tr :: _ row) ->
-              withTypeable tr $
-              withKindStar @_ @row $
-              case resolveClip @row of
-                Just dict ->
-                  withDict dict $ pullClipSumBound' @row g f t
-                Nothing -> throwM' $ RequiresClip (SomeTypeRep tr)
+  where
+    go ((t, tr), f) =
+      case tr of
+        SomeTypeRep (tr :: _ row) ->
+          withTypeable tr
+            $ withKindStar @_ @row
+            $ case resolveClip @row of
+              Just dict ->
+                withDict dict $ pullClipSumBound' @row g f t
+              Nothing -> throwM' $ RequiresClip (SomeTypeRep tr)
 
 pullClipSumBound' ::
   forall row m.
