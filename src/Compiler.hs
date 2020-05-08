@@ -30,14 +30,14 @@ data AnyEdge where
 data AnyRedZone :: * where
   AnyRedZone :: Typeable r => HFix NRedZoneF r -> AnyRedZone
 
-type Direction = (String, String)
+type Direction = (UniqueName, UniqueName)
 
 data EffectGraph
   = EG
       { _egEdges :: M.Map Direction AnyEdge,
-        _egNeighbors :: M.Map String [String],
-        _egParents :: M.Map String String,
-        _egTypes :: M.Map String SomeTypeRep
+        _egNeighbors :: M.Map UniqueName [UniqueName],
+        _egParents :: M.Map UniqueName UniqueName,
+        _egTypes :: M.Map UniqueName SomeTypeRep
       }
 
 makeLensesWith abbreviatedFields ''EffectGraph
@@ -56,13 +56,13 @@ makeLensesWith abbreviatedFields ''Effect
 data SIMD f t
   = SIMD
       { _sMapFunction :: HFix NRedZoneF (f -> t),
-        _sFromName :: String,
-        _sToName :: String
+        _sFromName :: UniqueName,
+        _sToName :: UniqueName
       }
 
 makeLensesWith abbreviatedFields ''SIMD
 
-simd :: HFix NRedZoneF (f -> t) -> String -> String -> SIMD f t
+simd :: HFix NRedZoneF (f -> t) -> UniqueName -> UniqueName -> SIMD f t
 simd = SIMD
 
 fuse ::
@@ -73,8 +73,8 @@ fuse ::
   ) =>
   SIMDFusion fs ts ->
   HFix NRedZoneF (f -> t) ->
-  String ->
-  String ->
+  UniqueName ->
+  UniqueName ->
   SIMDFusion (fs, f) (ts, t)
 fuse fusion f from to = SIMDCons fusion (simd f from to)
 
@@ -95,7 +95,7 @@ fusedMapFunction (SIMDCons (fusion :: _ ai ao) (simd :: _ bi bo)) = do
 injectSimd ::
   forall f t m.
   (Typeable f, MonadThrowWithStack m) =>
-  M.Map String AnyRedZone ->
+  M.Map UniqueName AnyRedZone ->
   SIMDFusion f t ->
   m (HFix NRedZoneF f)
 injectSimd inputs (SIMD1 simd) = do
@@ -107,10 +107,10 @@ injectSimd inputs (SIMD1 simd) = do
           throwM' . InternalError $
             printf
               "injectSimd: expected input %s to have type %s, but it has type %s"
-              (simd ^. fromName)
+              (show $ simd ^. fromName)
               (show $ typeRep @f)
               (show $ typeRep @f')
-    Nothing -> throwM' . InternalError $ printf "injectSimd: unknown input name %s" (simd ^. fromName)
+    Nothing -> throwM' . InternalError $ printf "injectSimd: unknown input name %s" (show $ simd ^. fromName)
 injectSimd inputs (SIMDCons (fusion :: SIMDFusion fs1 _) (simd :: SIMD f1 _)) = do
   acc <- injectSimd inputs fusion
   case M.lookup (simd ^. fromName) inputs of
@@ -121,12 +121,12 @@ injectSimd inputs (SIMDCons (fusion :: SIMDFusion fs1 _) (simd :: SIMD f1 _)) = 
           throwM' . InternalError $
             printf
               "injectSimd: expected input %s to have type %s, but it has type %s"
-              (simd ^. fromName)
+              (show $ simd ^. fromName)
               (show $ typeRep @f)
               (show $ typeRep @f')
-    Nothing -> throwM' . InternalError $ printf "injectSimd: unknown input name %s" (simd ^. fromName)
+    Nothing -> throwM' . InternalError $ printf "injectSimd: unknown input name %s" (show $ simd ^. fromName)
 
-containsTo :: String -> SIMDFusion f t -> Bool
+containsTo :: UniqueName -> SIMDFusion f t -> Bool
 containsTo x (SIMD1 simd) = (simd ^. toName) == x
 containsTo x (SIMDCons fusion simd) =
   containsTo x fusion || (simd ^. toName) == x
@@ -134,7 +134,7 @@ containsTo x (SIMDCons fusion simd) =
 projectSimd ::
   forall f t r m.
   (Typeable t, Typeable r, MonadThrowWithStack m) =>
-  String ->
+  UniqueName ->
   SIMDFusion f t ->
   m (HFix NRedZoneF t -> HFix NRedZoneF r)
 projectSimd x (SIMD1 simd) = do
@@ -146,10 +146,10 @@ projectSimd x (SIMD1 simd) = do
         throwM' . InternalError $
           printf
             "projectSimd: expected output name %s to have type (%s), but it has type %s"
-            x
+            (show x)
             (show $ typeRep @t)
             (show $ typeRep @r)
-    else throwM' . InternalError $ printf "projectSimd: unknown output name %s" x
+    else throwM' . InternalError $ printf "projectSimd: unknown output name %s" (show x)
 projectSimd x (SIMDCons (fusion :: SIMDFusion _ ts1) (simd :: SIMD _ t1)) =
   case (containsTo x fusion, x == simd ^. toName) of
     (True, False) -> do
@@ -162,15 +162,15 @@ projectSimd x (SIMDCons (fusion :: SIMDFusion _ ts1) (simd :: SIMD _ t1)) =
           throwM' . InternalError $
             printf
               "projectSimd: expected output %s to have type %s, but it has type %s"
-              x
+              (show x)
               (show $ typeRep @r)
               (show $ typeRep @t1)
     (True, True) ->
       throwM' . InternalError $
-        printf "projectSimd: expected output %s to appear on exactly one side" x
+        printf "projectSimd: expected output %s to appear on exactly one side" (show x)
     (False, False) ->
       throwM' . InternalError $
-        printf "projectSimd: expected output %s to appear on at least one side" x
+        printf "projectSimd: expected output %s to appear on at least one side" (show x)
 
 data SIMDFusion f t where
   SIMD1 :: (Typeable f, Typeable t) => SIMD f t -> SIMDFusion f t
@@ -188,7 +188,7 @@ instance Show MisplacedMsg where
 data CompilerError
   = InternalError String
   | -- | Cannot find the computation step for computing `from` to `to.
-    NoSuchEdge {from :: String, to :: String}
+    NoSuchEdge {from :: UniqueName, to :: UniqueName}
   | -- | The clip bound has incorrect representation size.
     ClipSizeError {expectedSize :: Int, observedSize :: Int}
   | UnsupportedRedZoneTerm Doc
@@ -229,7 +229,7 @@ insert m dir@(from, to) e =
                 %~ M.insert to from
               & types
                 %~ M.insert to (SomeTypeRep (typeRep @toType))
-        Just _ -> throwM' . InternalError $ printf "%s already has a parent" to
+        Just _ -> throwM' . InternalError $ printf "%s already has a parent" (show to)
     Just _ -> throwM' . InternalError $ printf "direction %s is duplicated" (show dir)
 
 -- | Takes the disjoint union of two maps.
@@ -246,11 +246,11 @@ mergeEdges m1 m2 = do
     duplicates = fmap fst (M.toList $ M.intersection m1 m2)
 
 -- | Simply takes the union of neighbors from both sides.
-mergeNeighbors :: M.Map String [String] -> M.Map String [String] -> M.Map String [String]
+mergeNeighbors :: M.Map UniqueName [UniqueName] -> M.Map UniqueName [UniqueName] -> M.Map UniqueName [UniqueName]
 mergeNeighbors = M.unionWith (++)
 
 mergeParents ::
-  MonadThrowWithStack m => M.Map String String -> M.Map String String -> m (M.Map String String)
+  MonadThrowWithStack m => M.Map UniqueName UniqueName -> M.Map UniqueName UniqueName -> m (M.Map UniqueName UniqueName)
 mergeParents m1 m2 = do
   if M.disjoint m1 m2
     then return (M.union m1 m2)
@@ -260,9 +260,9 @@ mergeParents m1 m2 = do
 
 mergeTypes ::
   MonadThrowWithStack m =>
-  M.Map String SomeTypeRep ->
-  M.Map String SomeTypeRep ->
-  m (M.Map String SomeTypeRep)
+  M.Map UniqueName SomeTypeRep ->
+  M.Map UniqueName SomeTypeRep ->
+  m (M.Map UniqueName SomeTypeRep)
 mergeTypes m1 m2 = do
   if M.disjoint m1 m2
     then return (M.union m1 m2)
@@ -509,15 +509,15 @@ isPublic _ = False
 
 data DelayedInflate m a
   = DelayedInflate
-      { _diFreeVars :: S.Set String,
+      { _diFreeVars :: S.Set UniqueName,
         _diOriginal :: HFix MainF a,
         -- | The inflate algebra builds up a function that takes a list of public
         -- variable names, and emits a term in the MCS language, and a flag of whether
         -- this term evaluates to private or public data.
-        _diInflate :: S.Set String -> m (SecurityLevel, HFix NMcsF a)
+        _diInflate :: S.Set UniqueName -> m (SecurityLevel, HFix NMcsF a)
       }
 
-prjFvs :: DelayedInflate m a -> K (S.Set String) a
+prjFvs :: DelayedInflate m a -> K (S.Set UniqueName) a
 prjFvs (DelayedInflate fvs _ _) = K fvs
 
 prjOriginal :: DelayedInflate m a -> HFix MainF a
@@ -528,9 +528,9 @@ makeLensesWith abbreviatedFields ''DelayedInflate
 fuseMapPaths ::
   forall (row :: *) r m.
   (Typeable row, MonadThrowWithStack m) =>
-  String ->
-  String ->
-  [(String, SomeTypeRep)] ->
+  UniqueName ->
+  UniqueName ->
+  [(UniqueName, SomeTypeRep)] ->
   EffectGraph ->
   (forall fs ts. (Typeable fs, Typeable ts) => SIMDFusion fs ts -> m r) ->
   m r
@@ -560,10 +560,10 @@ buildReleaseTerm ::
     MonadThrowWithStack m,
     FreshM m
   ) =>
-  S.Set String ->
+  S.Set UniqueName ->
   EffectGraph ->
-  String ->
-  S.Set String ->
+  UniqueName ->
+  S.Set UniqueName ->
   HFix NOrangeZoneF Number ->
   (HFix NMcsF Number -> HFix NMcsF (Distr Number)) ->
   (forall ts. Typeable ts => Int -> Vec Number -> HFix NMcsF (row -> ts) -> HFix NMcsF (ts -> Distr Number) -> m r) ->
@@ -580,7 +580,7 @@ buildReleaseTerm released g db cFvs cPure build k = do
       throwM' . InternalError $
         "inflateExprMonadF: impossible, we should have at least 1 private source here"
     _ -> do
-      dbrowName <- gfresh $ printf "%s_row" db
+      dbrowName <- gfreshAppend db "row"
       let sourceTerms =
             M.fromList
               [ ( dbrowName,
@@ -616,20 +616,20 @@ buildReleaseTerm released g db cFvs cPure build k = do
         Just p -> return p
         Nothing ->
           throwM' . InternalError $
-            printf "inflateExprMonadF: %s has no parent" x
+            printf "inflateExprMonadF: %s has no parent" (show x)
     getType types x =
       case M.lookup x types of
         Just ty -> return ty
         Nothing ->
           throwM' . InternalError $
-            printf "inflateExprMonadF: %s has no known type" x
+            printf "inflateExprMonadF: %s has no known type" (show x)
     substWithProjection ::
       forall fs ts a.
       (Typeable ts) =>
       SIMDFusion fs ts ->
       HFix NOrangeZoneF ts ->
       HFix NOrangeZoneF a ->
-      ((String, SomeTypeRep), String) ->
+      ((UniqueName, SomeTypeRep), UniqueName) ->
       m (HFix NOrangeZoneF a)
     substWithProjection fusion releaseInput releaseTerm ((src, srcTy), srcParent) = do
       case srcTy of
@@ -644,7 +644,7 @@ inflateExprMonadF ::
   forall (row :: *) a m.
   (Typeable row, FreshM m, MonadThrowWithStack m) =>
   EffectGraph ->
-  String ->
+  UniqueName ->
   ExprMonadF (DelayedInflate m) a ->
   (DelayedInflate m a)
 inflateExprMonadF _ _ term@(EBindF m var@(Var bound) f) =
@@ -680,7 +680,7 @@ inflateExprMonadF g db term@(ELaplaceF w c) =
 
 inflateGenF ::
   (HInject h MainF, HFunctor h, Monad m) =>
-  (h (K (S.Set String)) a -> K (S.Set String) a) ->
+  (h (K (S.Set UniqueName)) a -> K (S.Set UniqueName) a) ->
   h (DelayedInflate m) a ->
   DelayedInflate m a
 inflateGenF fvAlgF term =
@@ -697,7 +697,7 @@ inflateF ::
     FreshM m
   ) =>
   EffectGraph ->
-  String ->
+  UniqueName ->
   MainF (DelayedInflate m) a ->
   DelayedInflate m a
 inflateF g db =
@@ -713,7 +713,7 @@ inflateM ::
     FreshM m
   ) =>
   EffectGraph ->
-  String ->
+  UniqueName ->
   HFix MainF a ->
   m (SecurityLevel, HFix NMcsF a)
 inflateM g db term = do
@@ -728,13 +728,14 @@ compileM ::
   (forall f. HXFix CPSFuzzF f (Bag row) -> HXFix CPSFuzzF f (Distr a)) ->
   m (HFix NMcsF (Distr a))
 compileM db prog = do
-  namedTerm <- named' $ prog (xwrap . hinject' $ XEVarF db)
+  dbName <- gfresh db
+  namedTerm <- named' $ prog (xwrap . hinject' $ XEVarF dbName)
   flatTerm <- flatten namedTerm
   let simpleTerm = monadReduce . etaBetaReduce $ flatTerm
   termShapeCheck simpleTerm
   eff <- effects simpleTerm
   deflatedTerm <- deflateM $ eff ^. normalized
-  (secLvl, term) <- inflateM @row (eff ^. graph) db deflatedTerm
+  (secLvl, term) <- inflateM @row (eff ^. graph) dbName deflatedTerm
   case secLvl of
     Private -> throwM' ReleasesPrivateInformation
     _ -> return ()
@@ -745,21 +746,21 @@ compile ::
   String ->
   (forall f. HXFix CPSFuzzF f (Bag row) -> HXFix CPSFuzzF f (Distr a)) ->
   Either SomeException (HFix NMcsF (Distr a))
-compile db prog = flip evalStateT (nameState [db]) (compileM db prog)
+compile db prog = flip evalStateT emptyNameState (compileM db prog)
 
 pullMapEffectsTrans' ::
   forall (row1 :: *) (row2 :: *) m.
   (MonadThrowWithStack m, Typeable row1, Typeable row2) =>
   EffectGraph ->
-  String ->
-  String ->
+  UniqueName ->
+  UniqueName ->
   m (HFix NRedZoneF (row1 -> row2))
 pullMapEffectsTrans' g from to =
   case M.lookup to (g ^. parents) of
     Nothing ->
       traceShow (from, to)
         $ throwM' . InternalError
-        $ printf "pullMapEffectsTrans': orphaned node %s" to
+        $ printf "pullMapEffectsTrans': orphaned node %s" (show to)
     Just p ->
       if p == from
         then pullMapEffectsStep' @row1 @row2 g from to
@@ -767,7 +768,7 @@ pullMapEffectsTrans' g from to =
           case M.lookup p (g ^. types) of
             Nothing ->
               throwM' . InternalError $
-                printf "pullMapEffectsTrans': node %s has no type" p
+                printf "pullMapEffectsTrans': node %s has no type" (show p)
             Just (SomeTypeRep (parentDb :: TypeRep parentDb)) ->
               -- bunch of yucky proofs to make things kind and type check
               withTypeable parentDb
@@ -783,8 +784,8 @@ pullMapEffectsStep' ::
   forall row1 row2 m.
   (MonadThrowWithStack m, Typeable row1, Typeable row2) =>
   EffectGraph ->
-  String ->
-  String ->
+  UniqueName ->
+  UniqueName ->
   m (HFix NRedZoneF (row1 -> row2))
 pullMapEffectsStep' g from to =
   case M.lookup (from, to) (g ^. edges) of
@@ -798,20 +799,20 @@ pullMapEffectsStep' g from to =
             Map f -> return f
             Sum _ ->
               throwM' . InternalError $
-                printf "pullMapEffectsStep': expected edge (%s, %s) to be a map" from to
+                printf "pullMapEffectsStep': expected edge (%s, %s) to be a map" (show from) (show to)
         _ ->
           throwM' . InternalError $
             printf
               "pullMapEffectsStep': expected edge (%s, %s) to have type %s but observed %s"
-              from
-              to
+              (show from)
+              (show to)
               (show $ typeRep @(Edge (Bag row1) (Bag row2)))
               (show $ typeRep @(Edge fromDb toDb))
 
 pullClipSumBounds' ::
   MonadThrowWithStack m =>
   EffectGraph ->
-  [((String, SomeTypeRep), String)] ->
+  [((UniqueName, SomeTypeRep), UniqueName)] ->
   m (Vec Number)
 pullClipSumBounds' g dirs = do
   bounds <- mapM go dirs
@@ -831,8 +832,8 @@ pullClipSumBound' ::
   forall row m.
   (MonadThrowWithStack m, Typeable row, Clip row) =>
   EffectGraph ->
-  String ->
-  String ->
+  UniqueName ->
+  UniqueName ->
   m (Vec Number)
 pullClipSumBound' g from to =
   case M.lookup (from, to) (g ^. edges) of

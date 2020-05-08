@@ -66,13 +66,13 @@ pBagOpF (BSumF clip inputDb kont) = P $ \prec ->
 pFlatBagOpF :: FlatBagOpF P a -> P a
 pFlatBagOpF (FBMapF mf (Var inputDb) kont) = P $ \prec ->
   let mfDoc = runPretty mf (precedenceTable "App")
-      inputDbDoc = string inputDb
+      inputDbDoc = string . show $ inputDb
       kontDoc = runPretty kont 0
    in parensIf (prec > precedenceTable "App") $
         string "bmap" <+> mfDoc <+> inputDbDoc <+> string "$" <$$> nest 2 kontDoc
 pFlatBagOpF (FBSumF clip (Var inputDb) kont) = P $ \prec ->
   let clipDoc = parens . text $ show clip
-      inputDbDoc = string inputDb
+      inputDbDoc = string . show $ inputDb
       kontDoc = runPretty kont 0
    in parensIf (prec > precedenceTable "App") $
         string "bsum" <+> clipDoc <+> inputDbDoc <+> string "$" <$$> nest 2 kontDoc
@@ -85,7 +85,7 @@ pExprMonadF (ELaplaceF w c) = P $ \prec ->
 pExprMonadF (EBindF m (Var bound) f) = P $ \prec ->
   let mDoc = runPretty m 0
       fDoc = runPretty f 0
-   in text bound <+> string "<-" <+> mDoc <$$> fDoc
+  in (string (show bound)) <+> string "<-" <+> mDoc <$$> fDoc
 pExprMonadF (EReturnF m) = P $ \prec ->
   let mDoc = runPretty m (precedenceTable "App")
    in string "return" <+> mDoc
@@ -94,13 +94,13 @@ showTypeRep :: forall a. Typeable a => Doc
 showTypeRep = text . show $ (typeRep @a)
 
 pExprF :: ExprF P a -> P a
-pExprF (EVarF (Var x)) = P $ const (text x)
+pExprF (EVarF (Var x)) = P $ const (string (show x))
 pExprF (ELamF (Var bound :: _ t) body) = P $ \prec ->
   let bodyDoc = runPretty body 0
-   in parens $
-        string "\\" <> (parens $ text bound <+> string "::" <+> showTypeRep @t)
-          <+> string "->"
-          </> bodyDoc
+  in parens $
+     string "\\" <> (parens $ (string (show bound)) <+> string "::" <+> showTypeRep @t)
+     <+> string "->"
+     </> bodyDoc
 pExprF (EAppF f arg) = P $ \prec ->
   let fDoc = runPretty f (precedenceTable "App")
       argDoc = runPretty arg (precedenceTable "App" + associativityTable "App")

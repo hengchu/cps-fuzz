@@ -85,14 +85,14 @@ newtype Vec a = Vec [a]
   deriving (Functor, Applicative, Monad, Foldable) via []
 
 data Var (a :: *) where
-  Var :: Typeable a => String -> Var a
+  Var :: Typeable a => UniqueName -> Var a
 
 deriving instance Show (Var a)
 
 deriving instance Eq (Var a)
 
 data XExprF :: (* -> *) -> * -> * where
-  XEVarF :: Typeable a => String -> XExprF r a
+  XEVarF :: Typeable a => UniqueName -> XExprF r a
   XELamF :: (KnownSymbol s, Typeable a, Typeable b) => (Name s (r a) -> r b) -> XExprF r (a -> b)
   XEAppF :: (Typeable a, Typeable b) => r (a -> b) -> r a -> XExprF r b
 
@@ -463,7 +463,7 @@ instance SynMonad (CPSFuzz f) Distr where
 
 var ::
   Typeable a =>
-  String ->
+  UniqueName ->
   CPSFuzz f a
 var = xwrap . hinject' . XEVarF
 
@@ -736,15 +736,15 @@ withHRefl k =
     Nothing -> throwM' $ TypeCheckError (SomeTypeRep (typeRep @a)) (SomeTypeRep (typeRep @b))
 
 fvBagOpF ::
-  BagOpF (K (S.Set String)) a ->
-  K (S.Set String) a
+  BagOpF (K (S.Set UniqueName)) a ->
+  K (S.Set UniqueName) a
 fvBagOpF (BMapF (unK -> f) (unK -> db) (unK -> kont)) = K $ f <> db <> kont
 fvBagOpF (BSumF _ (unK -> db) (unK -> kont)) = K $ db <> kont
 
 fvBagOpFM ::
   FreshM m =>
-  BagOpF (K (m (S.Set String))) a ->
-  K (m (S.Set String)) a
+  BagOpF (K (m (S.Set UniqueName))) a ->
+  K (m (S.Set UniqueName)) a
 fvBagOpFM (BMapF (unK -> f) (unK -> db) (unK -> kont)) = K $ S.union <$> f <*> (S.union <$> db <*> kont)
 fvBagOpFM (BSumF _ (unK -> db) (unK -> kont)) = K $ S.union <$> db <*> kont
 
@@ -777,8 +777,8 @@ namedBagOpFM (BSumF clip ((unK -> db) :: _ (Bag Number)) ((unK -> kont) :: _ (Nu
             return . AnyNCPSFuzz . wrap . hinject' $ BSumF clip db' kont'
 
 fvExprMonadF ::
-  ExprMonadF (K (S.Set String)) a ->
-  K (S.Set String) a
+  ExprMonadF (K (S.Set UniqueName)) a ->
+  K (S.Set UniqueName) a
 fvExprMonadF (ELaplaceF _ (unK -> fvs)) = K fvs
 fvExprMonadF (EReturnF (unK -> fvs)) = K fvs
 fvExprMonadF (EBindF (unK -> fvs1) (Var bound) (unK -> fvs2)) =
@@ -787,8 +787,8 @@ fvExprMonadF (EBindF (unK -> fvs1) (Var bound) (unK -> fvs2)) =
 
 fvXExprMonadF ::
   FreshM m =>
-  XExprMonadF (K (m (S.Set String))) a ->
-  K (m (S.Set String)) a
+  XExprMonadF (K (m (S.Set UniqueName))) a ->
+  K (m (S.Set UniqueName)) a
 fvXExprMonadF (XELaplaceF _ (unK -> w)) = K w
 fvXExprMonadF (XEReturnF (unK -> a)) = K a
 fvXExprMonadF (XEBindF (unK -> m) f) = K $ do
@@ -825,8 +825,8 @@ namedXExprMonadFM (XELaplaceF w ((unK -> c) :: _ Number)) = K $ do
 
 fvXExprF ::
   FreshM m =>
-  XExprF (K (m (S.Set String))) a ->
-  K (m (S.Set String)) a
+  XExprF (K (m (S.Set UniqueName))) a ->
+  K (m (S.Set UniqueName)) a
 fvXExprF (XEVarF x) = K . return . S.singleton $ x
 fvXExprF (XELamF f) = K $ do
   x <- gfresh "x"
@@ -861,14 +861,14 @@ namedXExprFM (XEAppF ((unK -> a) :: _ (a1 -> a)) ((unK -> b) :: _ a1)) = K $ do
             return . AnyNCPSFuzz . wrap . hinject' $ EAppF a' b'
 
 fvControlF ::
-  ControlF (K (S.Set String)) a ->
-  K (S.Set String) a
+  ControlF (K (S.Set UniqueName)) a ->
+  K (S.Set UniqueName) a
 fvControlF (CIfF (unK -> cond) (unK -> a) (unK -> b)) = K $ cond <> a <> b
 
 fvControlFM ::
   FreshM m =>
-  ControlF (K (m (S.Set String))) a ->
-  K (m (S.Set String)) a
+  ControlF (K (m (S.Set UniqueName))) a ->
+  K (m (S.Set UniqueName)) a
 fvControlFM (CIfF (unK -> cond) (unK -> a) (unK -> b)) =
   K $ S.union <$> cond <*> (S.union <$> a <*> b)
 
@@ -892,8 +892,8 @@ namedControlFM (CIfF (unK -> cond) (unK -> a) (unK -> b)) = K $ do
               return . AnyNCPSFuzz . wrap . hinject' $ CIfF cond' a' b'
 
 fvPrimF ::
-  PrimF (K (S.Set String)) a ->
-  K (S.Set String) a
+  PrimF (K (S.Set UniqueName)) a ->
+  K (S.Set UniqueName) a
 fvPrimF (PLitF _) = K mempty
 fvPrimF (PAddF (unK -> a) (unK -> b)) = K $ a <> b
 fvPrimF (PSubF (unK -> a) (unK -> b)) = K $ a <> b
@@ -920,8 +920,8 @@ fvPrimF (PSndF (unK -> a)) = K a
 
 fvPrimFM ::
   FreshM m =>
-  PrimF (K (m (S.Set String))) a ->
-  K (m (S.Set String)) a
+  PrimF (K (m (S.Set UniqueName))) a ->
+  K (m (S.Set UniqueName)) a
 fvPrimFM (PLitF _) = K $ pure mempty
 fvPrimFM (PAddF (unK -> a) (unK -> b)) = K $ S.union <$> a <*> b
 fvPrimFM (PSubF (unK -> a) (unK -> b)) = K $ S.union <$> a <*> b
@@ -1078,8 +1078,8 @@ namedPrimFM (PSndF ((unK -> a) :: _ (p1, p2))) =
 
 fvCPSFuzzF ::
   FreshM m =>
-  CPSFuzzF (K (m (S.Set String))) a ->
-  K (m (S.Set String)) a
+  CPSFuzzF (K (m (S.Set UniqueName))) a ->
+  K (m (S.Set UniqueName)) a
 fvCPSFuzzF =
   fvBagOpFM
     `sumAlg` fvXExprMonadF
@@ -1098,7 +1098,7 @@ namedF =
     `sumAlg` namedControlFM
     `sumAlg` namedPrimFM
 
-fvCPSFuzz :: (forall f. CPSFuzz f a) -> S.Set String
+fvCPSFuzz :: (forall f. CPSFuzz f a) -> S.Set UniqueName
 fvCPSFuzz = flip evalState emptyNameState . unK . hxcata fvCPSFuzzF
 
 named' ::
@@ -1339,8 +1339,8 @@ swapGen var1 var2 = hcata' (swapGenF var1 var2)
 -}
 
 fvExprF ::
-  ExprF (K (S.Set String)) a ->
-  K (S.Set String) a
+  ExprF (K (S.Set UniqueName)) a ->
+  K (S.Set UniqueName) a
 fvExprF (EVarF (Var x)) = K (S.singleton x)
 fvExprF (ELamF (Var x) (unK -> body)) = K (S.delete x body)
 fvExprF (EAppF (unK -> a) (unK -> b)) = K (a <> b)
@@ -1481,7 +1481,7 @@ flattenF _ = throwM' UnFlattenableTerm
 flatten :: (MonadThrowWithStack m, FreshM m) => HFix NCPSFuzzF a -> m (HFix NNormalizedF a)
 flatten = hcataM' flattenF
 
-fvMainF :: MainF (K (S.Set String)) a -> K (S.Set String) a
+fvMainF :: MainF (K (S.Set UniqueName)) a -> K (S.Set UniqueName) a
 fvMainF =
   fvExprMonadF
     `sumAlg` fvExprF
