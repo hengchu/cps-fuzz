@@ -588,6 +588,7 @@ inflateExprMonadF g db term@(ELaplaceF w c) =
             parentTypes <- traverse (getType $ g ^. types) privateSourceParents
             let parentWithTypes = nub $ zip privateSourceParents parentTypes
             let pvSrcTypeParents = nub $ zip (zip privateSources privateSourceTypes) privateSourceParents
+            clipBounds <- pullClipSumBounds' g pvSrcTypeParents
             case privateSources of
               [] ->
                 throwM' . InternalError $
@@ -618,7 +619,7 @@ inflateExprMonadF g db term@(ELaplaceF w c) =
                         withDict dict $ do
                           let term =
                                 wrap . hinject' @_ @NMcsF $
-                                  MRunF (vecSize @ts) (Vec [0]) (mf `compose` inj) rls
+                                  MRunF (vecSize @ts) clipBounds (mf `compose` inj) rls
                           return (Public, term)
   where
     getParent parents x =
@@ -773,6 +774,24 @@ pullMapEffectsStep' g from to =
               to
               (show $ typeRep @(Edge (Bag row1) (Bag row2)))
               (show $ typeRep @(Edge fromDb toDb))
+
+pullClipSumBounds' ::
+  MonadThrowWithStack m =>
+  EffectGraph ->
+  [((String, SomeTypeRep), String)] ->
+  m (Vec Number)
+pullClipSumBounds' g dirs = do
+  bounds <- mapM go dirs
+  return $ foldr vecConcat (Vec []) bounds
+  where go ((t, tr), f) =
+          case tr of
+            SomeTypeRep (tr :: _ row) ->
+              withTypeable tr $
+              withKindStar @_ @row $
+              case resolveClip @row of
+                Just dict ->
+                  withDict dict $ pullClipSumBound' @row g f t
+                Nothing -> throwM' $ RequiresClip (SomeTypeRep tr)
 
 pullClipSumBound' ::
   forall row m.
