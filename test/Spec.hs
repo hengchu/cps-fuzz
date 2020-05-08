@@ -5,6 +5,13 @@ import Names
 import Data.Either
 import Test.Hspec
 import Control.Monad.State.Strict
+import Type.Reflection
+import Text.PrettyPrint.ANSI.Leijen
+import Pretty
+
+runNamed :: forall a. Typeable a => (forall f. HXFix CPSFuzzF f a) -> HFix NCPSFuzzF a
+runNamed prog = fromRight undefined $
+  flip evalStateT (nameState $ fvCPSFuzz prog) (named' prog)
 
 main :: IO ()
 main = hspec $ do
@@ -70,3 +77,61 @@ main = hspec $ do
                       (nameState $ fvCPSFuzz example7)
                       (named' example7 >>= return . etaBetaReduce))) ()
       a `shouldBe` ()
+
+  describe "pNCPSFuzz" $ do
+    it "prints example1 properly" $ example $ do
+      putStrLn "=============================="
+      putDoc (pNCPSFuzz $ runNamed example1)
+
+    it "prints example2 properly" $ example $ do
+      putStrLn "=============================="
+      putDoc (pNCPSFuzz $ runNamed example2)
+
+    it "prints example3 properly" $ example $ do
+      putStrLn "=============================="
+      putDoc (pNCPSFuzz $ runNamed example3)
+
+    it "prints example4 properly" $ example $ do
+      putStrLn "=============================="
+      putDoc (pNCPSFuzz $ runNamed example4)
+
+    it "prints example5 properly" $ example $ do
+      putStrLn "=============================="
+      putDoc (pNCPSFuzz $ runNamed example5)
+
+    it "prints example6 properly" $ example $ do
+      putStrLn "=============================="
+      putDoc (pNCPSFuzz $ runNamed example6)
+
+    it "prints example7 properly" $ example $ do
+      putStrLn "=============================="
+      putDoc (pNCPSFuzz $ runNamed example7)
+
+  describe "pNCPSFuzz . etaBetaReduce" $ do
+    it "prints example1 properly" $ example $ do
+      putStrLn "=============================="
+      putDoc (pNCPSFuzz . etaBetaReduce $ runNamed example1)
+
+    it "prints example2 properly" $ example $ do
+      putStrLn "=============================="
+      putDoc (pNCPSFuzz . etaBetaReduce $ runNamed example2)
+
+    it "prints example3 properly" $ example $ do
+      putStrLn "=============================="
+      putDoc (pNCPSFuzz . etaBetaReduce $ runNamed example3)
+
+    it "prints example4 properly" $ example $ do
+      putStrLn "=============================="
+      putDoc (pNCPSFuzz . etaBetaReduce $ runNamed example4)
+
+    it "prints example5 properly" $ example $ do
+      putStrLn "=============================="
+      putDoc (pNCPSFuzz . etaBetaReduce $ runNamed example5)
+
+    it "prints example6 properly" $ example $ do
+      putStrLn "=============================="
+      putDoc (pNCPSFuzz . etaBetaReduce $ runNamed example6)
+
+    it "prints example7 properly" $ example $ do
+      putStrLn "=============================="
+      putDoc (pNCPSFuzz . etaBetaReduce $ runNamed example7)
