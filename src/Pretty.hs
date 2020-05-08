@@ -62,6 +62,20 @@ pBagOpF (BSumF clip inputDb kont) = P $ \prec ->
   in parensIf (prec > precedenceTable "App") $
   string "bsum" <+> clipDoc <+> inputDbDoc <+> string "$" <$$> nest 2 kontDoc
 
+pFlatBagOpF :: FlatBagOpF P a -> P a
+pFlatBagOpF (FBMapF mf (Var inputDb) kont) = P $ \prec ->
+  let mfDoc = runPretty mf (precedenceTable "App")
+      inputDbDoc = string inputDb
+      kontDoc = runPretty kont 0
+  in parensIf (prec > precedenceTable "App") $
+  string "bmap" <+> mfDoc <+> inputDbDoc <+> string "$" <$$> nest 2 kontDoc
+pFlatBagOpF (FBSumF clip (Var inputDb) kont) = P $ \prec ->
+  let clipDoc = parens . text $ show clip
+      inputDbDoc = string inputDb
+      kontDoc = runPretty kont 0
+  in parensIf (prec > precedenceTable "App") $
+  string "bsum" <+> clipDoc <+> inputDbDoc <+> string "$" <$$> nest 2 kontDoc
+
 pExprMonadF :: ExprMonadF P a -> P a
 pExprMonadF (ELaplaceF w c) = P $ \prec ->
   let wDoc = double w
@@ -214,6 +228,12 @@ pMainF =
 
 pNCPSFuzzF :: NCPSFuzzF P a -> P a
 pNCPSFuzzF = pBagOpF `sumAlg` pMainF
+
+pNNormalizedF :: NNormalizedF P a -> P a
+pNNormalizedF = pFlatBagOpF `sumAlg` pMainF
+
+pNNormalized :: HFix NNormalizedF a -> Doc
+pNNormalized = flip runPretty 0 . (hcata' pNNormalizedF)
 
 pNCPSFuzz :: HFix NCPSFuzzF a -> Doc
 pNCPSFuzz = flip runPretty 0 . (hcata' pNCPSFuzzF)

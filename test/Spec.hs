@@ -13,6 +13,10 @@ runNamed :: forall a. Typeable a => (forall f. HXFix CPSFuzzF f a) -> HFix NCPSF
 runNamed prog = fromRight undefined $
   flip evalStateT (nameState $ fvCPSFuzz prog) (named' prog)
 
+runNamedFlatten :: forall a. Typeable a => (forall f. HXFix CPSFuzzF f a) -> HFix NNormalizedF a
+runNamedFlatten prog = fromRight undefined $
+  flip evalStateT (nameState $ fvCPSFuzz prog) (named' prog >>= flatten)
+
 main :: IO ()
 main = hspec $ do
   describe "openM" $ do
@@ -106,6 +110,35 @@ main = hspec $ do
     it "prints example7 properly" $ example $ do
       putStrLn "=============================="
       putDoc (pNCPSFuzz $ runNamed example7)
+
+  describe "pNNormalized" $ do
+    it "prints example1 properly" $ example $ do
+      putStrLn "=============================="
+      putDoc (pNNormalized $ runNamedFlatten example1)
+
+    it "prints example2 properly" $ example $ do
+      putStrLn "=============================="
+      putDoc (pNNormalized $ runNamedFlatten example2)
+
+    it "prints example3 properly" $ example $ do
+      putStrLn "=============================="
+      putDoc (pNNormalized $ runNamedFlatten example3)
+
+    it "prints example4 properly" $ example $ do
+      putStrLn "=============================="
+      putDoc (pNNormalized $ runNamedFlatten example4)
+
+    it "prints example5 properly" $ example $ do
+      putStrLn "=============================="
+      putDoc (pNNormalized $ runNamedFlatten example5)
+
+    it "prints example6 properly" $ example $ do
+      putStrLn "=============================="
+      putDoc (pNNormalized $ runNamedFlatten example6)
+
+    it "prints example7 properly" $ example $ do
+      putStrLn "=============================="
+      putDoc (pNNormalized $ runNamedFlatten example7)
 
   describe "pNCPSFuzz . etaBetaReduce" $ do
     it "prints example1 properly" $ example $ do
