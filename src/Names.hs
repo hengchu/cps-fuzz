@@ -9,10 +9,11 @@ import Text.Printf
 
 type NameMap = M.Map String Int
 
-data UniqueName = UniqueName {
-  _nBase :: String,
-  _nTrailing :: Int
-  }
+data UniqueName
+  = UniqueName
+      { _nBase :: String,
+        _nTrailing :: Int
+      }
   deriving (Eq, Ord)
 
 instance Show UniqueName where

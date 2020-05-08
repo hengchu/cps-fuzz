@@ -85,7 +85,7 @@ pExprMonadF (ELaplaceF w c) = P $ \prec ->
 pExprMonadF (EBindF m (Var bound) f) = P $ \prec ->
   let mDoc = runPretty m 0
       fDoc = runPretty f 0
-  in (string (show bound)) <+> string "<-" <+> mDoc <$$> fDoc
+   in (string (show bound)) <+> string "<-" <+> mDoc <$$> fDoc
 pExprMonadF (EReturnF m) = P $ \prec ->
   let mDoc = runPretty m (precedenceTable "App")
    in string "return" <+> mDoc
@@ -97,10 +97,10 @@ pExprF :: ExprF P a -> P a
 pExprF (EVarF (Var x)) = P $ const (string (show x))
 pExprF (ELamF (Var bound :: _ t) body) = P $ \prec ->
   let bodyDoc = runPretty body 0
-  in parens $
-     string "\\" <> (parens $ (string (show bound)) <+> string "::" <+> showTypeRep @t)
-     <+> string "->"
-     </> bodyDoc
+   in parens $
+        string "\\" <> (parens $ (string (show bound)) <+> string "::" <+> showTypeRep @t)
+          <+> string "->"
+          </> bodyDoc
 pExprF (EAppF f arg) = P $ \prec ->
   let fDoc = runPretty f (precedenceTable "App")
       argDoc = runPretty arg (precedenceTable "App" + associativityTable "App")

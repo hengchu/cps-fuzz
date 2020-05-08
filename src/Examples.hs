@@ -5,10 +5,10 @@ module Examples where
 import Data.String
 import GHC.TypeLits
 import HFunctor
+import Names
 import Syntax
 import Type.Reflection
 import Prelude hiding ((>>=), return)
-import Names
 
 -- ############
 -- # EXAMPLES #
@@ -114,10 +114,10 @@ bag_filter_sum_noise3 db =
 
 bag_filter_sum_noise4 :: forall f. CPSFuzz f (Bag Number) -> CPSFuzz f (Distr Number)
 bag_filter_sum_noise4 db =
-  bag_filter_sum db
-  $ \filter_sum -> do
-    $(named "s1'") <- lap 1.0 filter_sum
-    return (s1' + filter_sum)
+  bag_filter_sum db $
+    \filter_sum -> do
+      $(named "s1'") <- lap 1.0 filter_sum
+      return (s1' + filter_sum)
 
 -- #######################
 -- # FUNNY SYNTAX TRICKS #
