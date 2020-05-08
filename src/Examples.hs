@@ -111,6 +111,13 @@ bag_filter_sum_noise3 db =
     lt_5 :: Name "row" (CPSFuzz f Number) -> CPSFuzz f Bool
     lt_5 (N v) = v %< 5
 
+bag_filter_sum_noise4 :: forall f. CPSFuzz f (Bag Number) -> CPSFuzz f (Distr Number)
+bag_filter_sum_noise4 db =
+  bag_filter_sum db
+  $ \filter_sum -> do
+    $(named "s1'") <- lap 1.0 filter_sum
+    return (s1' + filter_sum)
+
 -- #######################
 -- # FUNNY SYNTAX TRICKS #
 -- #######################

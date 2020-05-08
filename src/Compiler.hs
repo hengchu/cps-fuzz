@@ -196,6 +196,7 @@ data CompilerError
   | -- | We need a type that satisfies `Clip`, but
     --  instead got this.
     RequiresClip SomeTypeRep
+  | ReleasesPrivateInformation
   deriving (Show)
 
 instance Exception CompilerError
@@ -258,7 +259,10 @@ mergeParents m1 m2 = do
     duplicates = fmap fst (M.toList $ M.intersection m1 m2)
 
 mergeTypes ::
-  MonadThrowWithStack m => M.Map String SomeTypeRep -> M.Map String SomeTypeRep -> m (M.Map String SomeTypeRep)
+  MonadThrowWithStack m =>
+  M.Map String SomeTypeRep ->
+  M.Map String SomeTypeRep ->
+  m (M.Map String SomeTypeRep)
 mergeTypes m1 m2 = do
   if M.disjoint m1 m2
     then return (M.union m1 m2)
@@ -730,8 +734,10 @@ compileM db prog = do
   termShapeCheck simpleTerm
   eff <- effects simpleTerm
   deflatedTerm <- deflateM $ eff ^. normalized
-  (_secLvl, term) <- inflateM @row (eff ^. graph) db deflatedTerm
-  -- TODO: log a warning message about secLvl if it's private?
+  (secLvl, term) <- inflateM @row (eff ^. graph) db deflatedTerm
+  case secLvl of
+    Private -> throwM' ReleasesPrivateInformation
+    _ -> return ()
   return term
 
 compile ::
