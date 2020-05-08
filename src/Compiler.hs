@@ -548,6 +548,86 @@ fuseMapPaths db dbrowName ((x, xTR) : xs) g kont = do
           \fusionXs -> kont (fuse fusionXs f from to)
       _ -> throwM' . InternalError $ "fuseMapPaths: expected SIMD1 here"
 
+buildReleaseTerm ::
+  forall (row :: *) r m.
+  (Typeable row,
+   MonadThrowWithStack m,
+   FreshM m) =>
+  S.Set String ->
+  EffectGraph ->
+  String ->
+  S.Set String ->
+  HFix NOrangeZoneF Number ->
+  (HFix NMcsF Number -> HFix NMcsF (Distr Number)) ->
+  (forall ts. Typeable ts => Int -> Vec Number -> HFix NMcsF (row -> ts) -> HFix NMcsF (ts -> Distr Number) -> m r) ->
+  m r
+buildReleaseTerm released g db cFvs cPure build k = do
+  let privateSources = S.toList $ cFvs `S.difference` released
+  privateSourceTypes <- traverse (getType $ g ^. types) privateSources
+  privateSourceParents <- traverse (getParent $ g ^. parents) privateSources
+  parentTypes <- traverse (getType $ g ^. types) privateSourceParents
+  let parentWithTypes = nub $ zip privateSourceParents parentTypes
+  let pvSrcTypeParents = nub $ zip (zip privateSources privateSourceTypes) privateSourceParents
+  case privateSources of
+    [] ->
+      throwM' . InternalError $
+      "inflateExprMonadF: impossible, we should have at least 1 private source here"
+    _ -> do
+      dbrowName <- gfresh $ printf "%s_row" db
+      let sourceTerms = M.fromList [(dbrowName,
+                                     AnyRedZone (wrap . hinject' $ EVarF @row (Var dbrowName)))]
+      fuseMapPaths @row db dbrowName parentWithTypes g $
+        \(fusion :: SIMDFusion fs ts) -> do
+          mf <- inject' <$> fusedMapFunction fusion
+          fusedInput <- injectSimd sourceTerms fusion
+          let inj = wrap . hinject' @_ @NMcsF $
+                    ELamF @row (Var dbrowName) (inject' @_ @NMcsF fusedInput)
+          orangeInputName <- gfresh "orange_input"
+          let oi = Var @ts orangeInputName
+          let oiTerm = wrap . hinject' $ EVarF oi
+          releaseTerm <-
+            inject' @_ @NMcsF
+              <$> foldM (substWithProjection fusion oiTerm) cPure pvSrcTypeParents
+          let rls :: HFix NMcsF (ts -> Distr Number)
+              rls =
+                wrap . hinject' @_ @NMcsF $
+                  ELamF oi (build releaseTerm)
+          clipBounds <- pullClipSumBounds' g pvSrcTypeParents
+          case resolveClip @ts of
+            Just dict ->
+              withDict dict $
+              k (vecSize @ts) clipBounds (mf `compose` inj) rls
+            _ -> throwM' $ RequiresClip (SomeTypeRep (typeRep @ts))
+  where
+    getParent parents x =
+      case M.lookup x parents of
+        Just p -> return p
+        Nothing ->
+          throwM' . InternalError $
+            printf "inflateExprMonadF: %s has no parent" x
+    getType types x =
+      case M.lookup x types of
+        Just ty -> return ty
+        Nothing ->
+          throwM' . InternalError $
+            printf "inflateExprMonadF: %s has no known type" x
+    substWithProjection ::
+      forall fs ts a.
+      (Typeable ts) =>
+      SIMDFusion fs ts ->
+      HFix NOrangeZoneF ts ->
+      HFix NOrangeZoneF a ->
+      ((String, SomeTypeRep), String) ->
+      m (HFix NOrangeZoneF a)
+    substWithProjection fusion releaseInput releaseTerm ((src, srcTy), srcParent) = do
+      case srcTy of
+        SomeTypeRep (srcTr :: _ srcTy) ->
+          withTypeable srcTr
+            $ withKindStar @_ @srcTy
+            $ do
+              projFun <- projectSimd @_ @ts @srcTy srcParent fusion
+              return $ hcata' (substGenF (Var @srcTy src) (projFun releaseInput)) releaseTerm
+
 inflateExprMonadF ::
   forall (row :: *) a m.
   (Typeable row, FreshM m, MonadThrowWithStack m) =>
@@ -582,74 +662,9 @@ inflateExprMonadF g db term@(ELaplaceF w c) =
               Just c' -> return c'
               Nothing ->
                 throwM' . InternalError $ "inflateExprMonadF: laplace center is not a pure term?!"
-            let privateSources = S.toList $ cFvs `S.difference` released
-            privateSourceTypes <- traverse (getType $ g ^. types) privateSources
-            privateSourceParents <- traverse (getParent $ g ^. parents) privateSources
-            parentTypes <- traverse (getType $ g ^. types) privateSourceParents
-            let parentWithTypes = nub $ zip privateSourceParents parentTypes
-            let pvSrcTypeParents = nub $ zip (zip privateSources privateSourceTypes) privateSourceParents
-            clipBounds <- pullClipSumBounds' g pvSrcTypeParents
-            case privateSources of
-              [] ->
-                throwM' . InternalError $
-                  "inflateExprMonadF: impossible, we should have at least 1 private source here"
-              _ -> do
-                dbrowName <- gfresh $ printf "%s_row" db
-                let sourceTerms = M.fromList [(dbrowName,
-                                               AnyRedZone (wrap . hinject' $ EVarF @row (Var dbrowName)))]
-                fuseMapPaths @row db dbrowName parentWithTypes g $
-                  \(fusion :: SIMDFusion fs ts) -> do
-                    mf <- inject' <$> fusedMapFunction fusion
-                    fusedInput <- injectSimd sourceTerms fusion
-                    let inj = wrap . hinject' @_ @NMcsF $
-                              ELamF @row (Var dbrowName) (inject' @_ @NMcsF fusedInput)
-                    orangeInputName <- gfresh "orange_input"
-                    let oi = Var @ts orangeInputName
-                    let oiTerm = wrap . hinject' $ EVarF oi
-                    releaseTerm <-
-                      inject' @_ @NMcsF
-                        <$> foldM (substWithProjection fusion oiTerm) cPure pvSrcTypeParents
-                    let rls :: HFix NMcsF (ts -> Distr Number)
-                        rls =
-                          wrap . hinject' @_ @NMcsF $
-                            ELamF oi (wrap . hinject' @_ @NMcsF $ ELaplaceF w releaseTerm)
-                    case resolveClip @ts of
-                      Nothing -> throwM' $ RequiresClip (SomeTypeRep (typeRep @ts))
-                      Just dict ->
-                        withDict dict $ do
-                          let term =
-                                wrap . hinject' @_ @NMcsF $
-                                  MRunF (vecSize @ts) clipBounds (mf `compose` inj) rls
-                          return (Public, term)
-  where
-    getParent parents x =
-      case M.lookup x parents of
-        Just p -> return p
-        Nothing ->
-          throwM' . InternalError $
-            printf "inflateExprMonadF: %s has no parent" x
-    getType types x =
-      case M.lookup x types of
-        Just ty -> return ty
-        Nothing ->
-          throwM' . InternalError $
-            printf "inflateExprMonadF: %s has no known type" x
-    substWithProjection ::
-      forall fs ts a.
-      (Typeable ts) =>
-      SIMDFusion fs ts ->
-      HFix NOrangeZoneF ts ->
-      HFix NOrangeZoneF a ->
-      ((String, SomeTypeRep), String) ->
-      m (HFix NOrangeZoneF a)
-    substWithProjection fusion releaseInput releaseTerm ((src, srcTy), srcParent) = do
-      case srcTy of
-        SomeTypeRep (srcTr :: _ srcTy) ->
-          withTypeable srcTr
-            $ withKindStar @_ @srcTy
-            $ do
-              projFun <- projectSimd @_ @ts @srcTy srcParent fusion
-              return $ hcata' (substGenF (Var @srcTy src) (projFun releaseInput)) releaseTerm
+            buildReleaseTerm @row released g db cFvs cPure (wrap . hinject' . ELaplaceF w) $
+              \reprSize clipBounds (mf :: _ (_ -> ts)) rf ->
+                return $ (Public, wrap . hinject' $ MRunF reprSize clipBounds mf rf)
 
 inflateGenF ::
   (HInject h MainF, HFunctor h, Monad m) =>
