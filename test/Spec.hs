@@ -32,7 +32,7 @@ main = hspec $ do
         (flip evalStateT
            (nameState $ fvCPSFuzz example3)
            (named' example3 >>= openM))
-      `shouldBe` (Var "foo")
+      `shouldBe` (Var (UniqueName "foo" 0))
 
   describe "flatten" $ do
     it "runs without error: ex3" $ do

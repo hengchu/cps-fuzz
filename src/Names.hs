@@ -9,6 +9,15 @@ import Text.Printf
 
 type NameMap = M.Map String Int
 
+data UniqueName = UniqueName {
+  _nBase :: String,
+  _nTrailing :: Int
+  }
+  deriving (Eq, Ord)
+
+instance Show UniqueName where
+  show (UniqueName b t) = printf "%s_%d_" b t
+
 data NameState
   = NameState
       { -- | the currently in-scope global names
@@ -20,12 +29,16 @@ data NameState
 
 makeLensesWith abbreviatedFields ''NameState
 
+gfreshAppend :: FreshM m => UniqueName -> String -> m UniqueName
+gfreshAppend (UniqueName b idx) postfix =
+  gfresh $ b ++ postfix
+
 class Monad m => FreshM m where
   getNameState :: m NameState
   modifyNameState :: (NameState -> NameState) -> m ()
 
   -- | Get a globally fresh name.
-  gfresh :: String -> m String
+  gfresh :: String -> m UniqueName
   gfresh hint = do
     ns <- getNameState
     let gnames = ns ^. globals
@@ -36,11 +49,11 @@ class Monad m => FreshM m where
       Nothing -> do
         modifyNameState (\st -> st & globals %~ M.insert hint 1)
         modifyNameState (\st -> st & locals %~ map (M.insert hint 1))
-        return hint
+        return $ UniqueName hint 0
       Just nextIdx -> do
         modifyNameState (\st -> st & globals %~ M.insert hint (nextIdx + 1))
         modifyNameState (\st -> st & locals %~ map (M.insert hint (nextIdx + 1)))
-        return $ printf "%s_%d" hint nextIdx
+        return $ UniqueName hint nextIdx
 
   -- | Enter a new locally fresh context.
   lpush :: m ()
@@ -62,7 +75,7 @@ class Monad m => FreshM m where
       (_ : cs) -> modifyNameState (\st -> st & locals %~ (const cs))
 
   -- | Get a locally fresh name.
-  lfresh :: String -> m String
+  lfresh :: String -> m UniqueName
   lfresh hint = do
     ns <- getNameState
     let lcxts = ns ^. locals
@@ -72,11 +85,11 @@ class Monad m => FreshM m where
         Nothing -> do
           let c' = M.insert hint 1 c
           modifyNameState (\st -> st & locals %~ (const $ c' : cs))
-          return hint
+          return $ UniqueName hint 0
         Just nextIdx -> do
           let c' = M.insert hint (nextIdx + 1) c
           modifyNameState (\st -> st & locals %~ (const $ c' : cs))
-          return $ printf "%s_%d" hint nextIdx
+          return $ UniqueName hint nextIdx
 
 instance Monad m => FreshM (StateT NameState m) where
   getNameState = get
@@ -85,7 +98,7 @@ instance Monad m => FreshM (StateT NameState m) where
 emptyNameState :: NameState
 emptyNameState = NameState M.empty []
 
-nameState :: Foldable t => t String -> NameState
+nameState :: Foldable t => t UniqueName -> NameState
 nameState inScope = NameState globals []
   where
-    globals = foldr (\name -> M.insert name 1) M.empty inScope
+    globals = foldr (\(UniqueName name idx) -> M.insertWith max name idx) M.empty inScope

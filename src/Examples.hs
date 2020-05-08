@@ -8,6 +8,7 @@ import HFunctor
 import Syntax
 import Type.Reflection
 import Prelude hiding ((>>=), return)
+import Names
 
 -- ############
 -- # EXAMPLES #
@@ -17,7 +18,7 @@ example1 :: forall f. CPSFuzz f (Int -> Int)
 example1 = toDeepRepr $ \(N x :: Name "abc" (CPSFuzz f Int)) -> x
 
 example2 :: forall f. CPSFuzz f Bool
-example2 = xwrap . hinject' $ (XEVarF "y")
+example2 = xwrap . hinject' $ (XEVarF (UniqueName "y" 0))
 
 -- Note that this "y" does not capture the "y" inside. It will get automatically
 -- alpha-converted.
