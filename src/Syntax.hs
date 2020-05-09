@@ -12,6 +12,7 @@ import Control.Monad.State.Strict
 import Data.Constraint
 import Data.Functor.Compose
 import Data.Kind
+import Data.List (reverse)
 import Data.Proxy
 import qualified Data.Set as S
 import Debug.Trace
@@ -186,10 +187,11 @@ data ControlF :: (* -> *) -> * -> * where
 
 data McsF :: (* -> *) -> * -> * where
   MRunF ::
-    (Typeable row,
-     Typeable sum,
-     Clip sum,
-     Typeable result) =>
+    ( Typeable row,
+      Typeable sum,
+      Clip sum,
+      Typeable result
+    ) =>
     Int ->
     Vec Number ->
     r (row -> sum) ->
@@ -199,13 +201,14 @@ data McsF :: (* -> *) -> * -> * where
 
 data BmcsF :: (* -> *) -> * -> * where
   BRunF ::
-    (Typeable row,
-     Typeable sum,
-     Typeable mstate,
-     Typeable rstate,
-     VecStorable rstate,
-     Clip sum,
-     Typeable result) =>
+    ( Typeable row,
+      Typeable sum,
+      Typeable mstate,
+      Typeable rstate,
+      VecStorable rstate,
+      Clip sum,
+      Typeable result
+    ) =>
     Int ->
     Vec Number ->
     r mstate ->
@@ -485,6 +488,9 @@ instance SynMonad (CPSFuzz f) Distr where
   m >>=. f = xwrap . hinject' $ XEBindF m f
   ret = xwrap . hinject' . XEReturnF
 
+lit :: (Typeable a, Show a) => a -> CPSFuzz f a
+lit = xwrap . hinject' . PLitF
+
 var ::
   Typeable a =>
   UniqueName ->
@@ -567,6 +573,31 @@ bfilter ::
   CPSFuzz f t
 bfilter pred input kont =
   bmap (\row -> if_ (pred row) (just (unName row)) nothing) input kont
+
+bpartition ::
+  forall row db a t f.
+  ( KnownSymbol row,
+    KnownSymbol db,
+    Typeable a,
+    Typeable t
+  ) =>
+  -- | The number of partitions we're producing
+  Int ->
+  -- | The partition function
+  (Name row (CPSFuzz f a) -> CPSFuzz f Int) ->
+  -- | The input db
+  CPSFuzz f (Bag a) ->
+  -- | The continuation that processes the parts
+  (Name db [CPSFuzz f (Bag (Maybe a))] -> CPSFuzz f t) ->
+  CPSFuzz f t
+bpartition nparts pfun db kont =
+  bpartition' nparts pfun db kont []
+  where
+    bpartition' n pfun db kont acc
+      | n <= 0 = kont (N (reverse acc))
+      | otherwise =
+        bfilter (\row -> pfun row %== (lit $ n -1)) db $ \(N partn :: Name db _) ->
+          bpartition' (n -1) pfun db kont (partn : acc)
 
 bsum ::
   ( KnownSymbol sum,
@@ -934,11 +965,11 @@ namedControlFM (CLoopF ((unK -> acc) :: _ acc) ((unK -> cond) :: _ (acc -> Bool)
     ( AnyNCPSFuzz (acc' :: _ acc'),
       AnyNCPSFuzz (cond' :: _ acc_arrow_bool'),
       AnyNCPSFuzz (iter' :: _ acc_arrow_distr_acc')
-     ) ->
-      withHRefl @acc @acc' $ \HRefl ->
-      withHRefl @(acc -> Bool) @acc_arrow_bool' $ \HRefl ->
-      withHRefl @(acc -> Distr acc) @(acc_arrow_distr_acc') $ \HRefl ->
-      return . AnyNCPSFuzz . wrap . hinject' $ CLoopF acc' cond' iter'
+      ) ->
+        withHRefl @acc @acc' $ \HRefl ->
+          withHRefl @(acc -> Bool) @acc_arrow_bool' $ \HRefl ->
+            withHRefl @(acc -> Distr acc) @(acc_arrow_distr_acc') $ \HRefl ->
+              return . AnyNCPSFuzz . wrap . hinject' $ CLoopF acc' cond' iter'
 
 fvPrimF ::
   PrimF (K (S.Set UniqueName)) a ->
@@ -1653,7 +1684,6 @@ resolveVecMonoid =
             _ -> Nothing
         _ -> Nothing
 
-
 resolveVecStorable :: forall (a :: *). Typeable a => Maybe (Dict (VecStorable a))
 resolveVecStorable =
   case eqTypeRep (typeRep @Number) (typeRep @a) of
@@ -1667,7 +1697,7 @@ resolveVecStorable =
             case eqTypeRep maybeMaybe (typeRep @Maybe) of
               Just HRefl ->
                 withDict a1MonoidDict $
-                return (Dict @(VecStorable (Maybe a1)))
+                  return (Dict @(VecStorable (Maybe a1)))
               _ -> Nothing
         App con (a2 :: typeRep a2) -> do
           HRefl <- eqTypeRep (typeRepKind a2) (typeRepKind (typeRep @Int))

@@ -694,8 +694,10 @@ inflateExprMonadF g db term@(ELaplaceF w c) =
             buildReleaseTerm @row released g db cFvs cPure (wrap . hinject' . ELaplaceF w) $
               \reprSize clipBounds (mf :: _ (_ -> ts)) rf ->
                 case resolveClip @ts of
-                  Just dict -> withDict dict $
-                    return $ (Public, wrap . hinject' $ MRunF reprSize clipBounds mf rf)
+                  Just dict ->
+                    withDict dict
+                      $ return
+                      $ (Public, wrap . hinject' $ MRunF reprSize clipBounds mf rf)
                   Nothing -> throwM' $ RequiresClip (SomeTypeRep $ typeRep @ts)
 
 inflateGenF ::
@@ -717,42 +719,45 @@ inflateControlF ::
 inflateControlF term@(CIfF cond a b) =
   let K fvs = fvControlF . hmap prjFvs $ term
       ogTerm = wrap . hinject' . hmap prjOriginal $ term
-  in DelayedInflate fvs ogTerm $ \released -> do
-    let condFvs = cond ^. freeVars
-    case condFvs `S.isSubsetOf` released of
-      True -> do
-        (_, cond') <- (cond ^. inflate) released
-        (s1, a') <- (a ^. inflate) released
-        (s2, b') <- (b ^. inflate) released
-        return (joinSecLvl s1 s2, wrap . hinject' $ CIfF cond' a' b')
-      False ->
-        throwM' $ BranchOnPrivateInformation $ S.toList (condFvs `S.difference` released)
+   in DelayedInflate fvs ogTerm $ \released -> do
+        let condFvs = cond ^. freeVars
+        case condFvs `S.isSubsetOf` released of
+          True -> do
+            (_, cond') <- (cond ^. inflate) released
+            (s1, a') <- (a ^. inflate) released
+            (s2, b') <- (b ^. inflate) released
+            return (joinSecLvl s1 s2, wrap . hinject' $ CIfF cond' a' b')
+          False ->
+            throwM' $ BranchOnPrivateInformation $ S.toList (condFvs `S.difference` released)
 inflateControlF term@(CLoopF acc cond iter) =
   let K fvs = fvControlF . hmap prjFvs $ term
       ogTerm = wrap . hinject' . hmap prjOriginal $ term
-  in DelayedInflate fvs ogTerm $ \released -> do
-    let accFvs = acc ^. freeVars
-    let condFvs = cond ^. freeVars
-    let iterFvs = iter ^. freeVars
-    case (accFvs `S.isSubsetOf` released,
-          condFvs `S.isSubsetOf` released,
-          iterFvs `S.isSubsetOf` released) of
-      (True, True, True) -> do
-        (accSecLvl, acc') <- (acc ^. inflate) released
-        (condSecLvl, cond') <- (cond ^. inflate) released
-        (iterSecLvl, iter') <- (iter ^. inflate) released
-        case iterSecLvl of
-          Private ->
-            throwM' $
-            LoopIterationReleasesPrivateInformation (pMain ogTerm)
-          Public ->
-            return
-              (accSecLvl `joinSecLvl` condSecLvl `joinSecLvl` iterSecLvl,
-               wrap . hinject' $ CLoopF acc' cond' iter')
-      _ ->
-        throwM' $
-        LoopUsesPrivateInformation $
-        S.toList $ (accFvs `S.union` condFvs `S.union` iterFvs) `S.difference` released
+   in DelayedInflate fvs ogTerm $ \released -> do
+        let accFvs = acc ^. freeVars
+        let condFvs = cond ^. freeVars
+        let iterFvs = iter ^. freeVars
+        case ( accFvs `S.isSubsetOf` released,
+               condFvs `S.isSubsetOf` released,
+               iterFvs `S.isSubsetOf` released
+             ) of
+          (True, True, True) -> do
+            (accSecLvl, acc') <- (acc ^. inflate) released
+            (condSecLvl, cond') <- (cond ^. inflate) released
+            (iterSecLvl, iter') <- (iter ^. inflate) released
+            case iterSecLvl of
+              Private ->
+                throwM' $
+                  LoopIterationReleasesPrivateInformation (pMain ogTerm)
+              Public ->
+                return
+                  ( accSecLvl `joinSecLvl` condSecLvl `joinSecLvl` iterSecLvl,
+                    wrap . hinject' $ CLoopF acc' cond' iter'
+                  )
+          _ ->
+            throwM'
+              $ LoopUsesPrivateInformation
+              $ S.toList
+              $ (accFvs `S.union` condFvs `S.union` iterFvs) `S.difference` released
 
 inflateF ::
   forall (row :: *) a m.

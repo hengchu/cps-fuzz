@@ -129,15 +129,32 @@ bag_filter_sum_noise5 db =
   where
     gt_5 :: Name "loop_acc" (CPSFuzz f Number) -> CPSFuzz f Bool
     gt_5 (N v) = v %> 5
-
     resample ::
       CPSFuzz f Number ->
       Name "loop_acc" (CPSFuzz f Number) ->
       CPSFuzz f (Distr Number)
     resample filter_sum _ = lap 1.0 filter_sum
-
-    minus_1 ::  Name "loop_acc" (CPSFuzz f Number) -> CPSFuzz f (Distr Number)
+    minus_1 :: Name "loop_acc" (CPSFuzz f Number) -> CPSFuzz f (Distr Number)
     minus_1 (N v) = return $ v - 1
+
+bag_partition_sum_noise :: forall f. CPSFuzz f (Bag Number) -> CPSFuzz f (Distr Number)
+bag_partition_sum_noise db =
+  bpartition 3 part_fun db $ \(N [part1, part2, part3] :: Name "parts" _) ->
+  bmapNothing 0 part1 $ \(N part1 :: Name "part1" _) ->
+  bmapNothing 0 part2 $ \(N part2 :: Name "part2" _) ->
+  bmapNothing 0 part3 $ \(N part3 :: Name "part3" _) ->
+  bsum 2 part1 $ \(N s1 :: Name "sum_part1" _) ->
+  bsum 3 part2 $ \(N s2 :: Name "sum_part2" _) ->
+  bsum 4 part3 $ \(N s3 :: Name "sum_part3" _) ->
+  lap 1.0 (s1 + s2 + s3)
+  where part_fun :: Name "row" (CPSFuzz f Number) -> CPSFuzz f Int
+        part_fun (N v) =
+          if_ (v %< -1)
+            0
+            (if_ (v %> 1)
+               2
+               1
+            )
 
 -- #######################
 -- # FUNNY SYNTAX TRICKS #
