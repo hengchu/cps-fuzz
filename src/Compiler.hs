@@ -192,6 +192,9 @@ data CompilerError
   | -- | The clip bound has incorrect representation size.
     ClipSizeError {expectedSize :: Int, observedSize :: Int}
   | UnsupportedRedZoneTerm Doc
+  | BranchOnPrivateInformation [UniqueName]
+  | LoopUsesPrivateInformation [UniqueName]
+  | LoopIterationReleasesPrivateInformation Doc
   | MisplacedBagOp MisplacedMsg Doc
   | -- | We need a type that satisfies `Clip`, but
     --  instead got this.
@@ -332,6 +335,7 @@ traceGraphControlF ::
   ControlF (K EffectGraph) a ->
   m (K EffectGraph a)
 traceGraphControlF (CIfF a b c) = (a .<> b) >>= \b' -> b' .<> c
+traceGraphControlF (CLoopF acc cond iter) = (acc .<> cond) >>= \eff -> eff .<> iter
 
 traceGraphPrimF ::
   MonadThrowWithStack m =>
@@ -410,6 +414,11 @@ deflateM = hcataM' deflateF
 data SecurityLevel = Public | Private
   deriving (Show, Eq, Ord)
 
+joinSecLvl :: SecurityLevel -> SecurityLevel -> SecurityLevel
+joinSecLvl Private _ = Private
+joinSecLvl _ Private = Private
+joinSecLvl _ _ = Public
+
 data UsesBagOp = No | Yes | Bad
   deriving (Show)
 
@@ -476,7 +485,15 @@ termShapeExprF (EAppF (unK -> a) (unK -> b)) = K $ a <> b
 termShapeExprF (ECompF (unK -> a) (unK -> b)) = K $ a <> b
 
 termShapeControlF :: ControlF (K UsesBagOp) a -> K UsesBagOp a
-termShapeControlF (CIfF (unK -> a) (unK -> b) (unK -> c)) = K $ a <> b <> c
+termShapeControlF (CIfF (unK -> cond) (unK -> b) (unK -> c)) =
+  case cond of
+    Yes -> K Bad
+    _ -> K $ cond <> b <> c
+termShapeControlF (CLoopF (unK -> acc) (unK -> cond) (unK -> iter)) =
+  case (acc, cond) of
+    (Yes, _) -> K Bad
+    (_, Yes) -> K Bad
+    _ -> K $ acc <> cond <> iter
 
 termShapePrimF :: PrimF (K UsesBagOp) a -> K UsesBagOp a
 termShapePrimF (PLitF _) = K No
@@ -676,7 +693,10 @@ inflateExprMonadF g db term@(ELaplaceF w c) =
                 throwM' . InternalError $ "inflateExprMonadF: laplace center is not a pure term?!"
             buildReleaseTerm @row released g db cFvs cPure (wrap . hinject' . ELaplaceF w) $
               \reprSize clipBounds (mf :: _ (_ -> ts)) rf ->
-                return $ (Public, wrap . hinject' $ MRunF reprSize clipBounds mf rf)
+                case resolveClip @ts of
+                  Just dict -> withDict dict $
+                    return $ (Public, wrap . hinject' $ MRunF reprSize clipBounds mf rf)
+                  Nothing -> throwM' $ RequiresClip (SomeTypeRep $ typeRep @ts)
 
 inflateGenF ::
   (HInject h MainF, HFunctor h, Monad m) =>
@@ -689,6 +709,50 @@ inflateGenF fvAlgF term =
    in DelayedInflate fvs ogTerm $ \released -> do
         let secLvl = if fvs `S.isSubsetOf` released then Public else Private
         return (secLvl, inject' ogTerm)
+
+inflateControlF ::
+  MonadThrowWithStack m =>
+  ControlF (DelayedInflate m) a ->
+  DelayedInflate m a
+inflateControlF term@(CIfF cond a b) =
+  let K fvs = fvControlF . hmap prjFvs $ term
+      ogTerm = wrap . hinject' . hmap prjOriginal $ term
+  in DelayedInflate fvs ogTerm $ \released -> do
+    let condFvs = cond ^. freeVars
+    case condFvs `S.isSubsetOf` released of
+      True -> do
+        (_, cond') <- (cond ^. inflate) released
+        (s1, a') <- (a ^. inflate) released
+        (s2, b') <- (b ^. inflate) released
+        return (joinSecLvl s1 s2, wrap . hinject' $ CIfF cond' a' b')
+      False ->
+        throwM' $ BranchOnPrivateInformation $ S.toList (condFvs `S.difference` released)
+inflateControlF term@(CLoopF acc cond iter) =
+  let K fvs = fvControlF . hmap prjFvs $ term
+      ogTerm = wrap . hinject' . hmap prjOriginal $ term
+  in DelayedInflate fvs ogTerm $ \released -> do
+    let accFvs = acc ^. freeVars
+    let condFvs = cond ^. freeVars
+    let iterFvs = iter ^. freeVars
+    case (accFvs `S.isSubsetOf` released,
+          condFvs `S.isSubsetOf` released,
+          iterFvs `S.isSubsetOf` released) of
+      (True, True, True) -> do
+        (accSecLvl, acc') <- (acc ^. inflate) released
+        (condSecLvl, cond') <- (cond ^. inflate) released
+        (iterSecLvl, iter') <- (iter ^. inflate) released
+        case iterSecLvl of
+          Private ->
+            throwM' $
+            LoopIterationReleasesPrivateInformation (pMain ogTerm)
+          Public ->
+            return
+              (accSecLvl `joinSecLvl` condSecLvl `joinSecLvl` iterSecLvl,
+               wrap . hinject' $ CLoopF acc' cond' iter')
+      _ ->
+        throwM' $
+        LoopUsesPrivateInformation $
+        S.toList $ (accFvs `S.union` condFvs `S.union` iterFvs) `S.difference` released
 
 inflateF ::
   forall (row :: *) a m.
@@ -703,7 +767,7 @@ inflateF ::
 inflateF g db =
   inflateExprMonadF @row g db
     `sumAlg` inflateGenF fvExprF
-    `sumAlg` inflateGenF fvControlF
+    `sumAlg` inflateControlF
     `sumAlg` inflateGenF fvPrimF
 
 inflateM ::

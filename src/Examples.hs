@@ -119,6 +119,26 @@ bag_filter_sum_noise4 db =
       $(named "s1'") <- lap 1.0 filter_sum
       return (s1' + filter_sum)
 
+bag_filter_sum_noise5 :: forall f. CPSFuzz f (Bag Number) -> CPSFuzz f (Distr Number)
+bag_filter_sum_noise5 db =
+  bag_filter_sum db $
+    \filter_sum -> do
+      $(named "s1'") <- lap 1.0 filter_sum
+      $(named "r'") <- loop s1' gt_5 minus_1 --(resample filter_sum)
+      return r'
+  where
+    gt_5 :: Name "loop_acc" (CPSFuzz f Number) -> CPSFuzz f Bool
+    gt_5 (N v) = v %> 5
+
+    resample ::
+      CPSFuzz f Number ->
+      Name "loop_acc" (CPSFuzz f Number) ->
+      CPSFuzz f (Distr Number)
+    resample filter_sum _ = lap 1.0 filter_sum
+
+    minus_1 ::  Name "loop_acc" (CPSFuzz f Number) -> CPSFuzz f (Distr Number)
+    minus_1 (N v) = return $ v - 1
+
 -- #######################
 -- # FUNNY SYNTAX TRICKS #
 -- #######################

@@ -181,17 +181,38 @@ data FlatBagOpF :: (* -> *) -> * -> * where
 -- | Control flow of the language.
 data ControlF :: (* -> *) -> * -> * where
   CIfF :: Typeable a => r Bool -> r a -> r a -> ControlF r a
+  CLoopF :: Typeable a => r a -> r (a -> Bool) -> r (a -> Distr a) -> ControlF r (Distr a)
   deriving (HXFunctor) via (DeriveHXFunctor ControlF)
 
 data McsF :: (* -> *) -> * -> * where
   MRunF ::
-    (Typeable row, Typeable sum) =>
+    (Typeable row,
+     Typeable sum,
+     Clip sum,
+     Typeable result) =>
     Int ->
     Vec Number ->
     r (row -> sum) ->
-    r (sum -> Distr Number) ->
-    McsF r (Distr Number)
+    r (sum -> Distr result) ->
+    McsF r (Distr result)
   deriving (HXFunctor) via (DeriveHXFunctor McsF)
+
+data BmcsF :: (* -> *) -> * -> * where
+  BRunF ::
+    (Typeable row,
+     Typeable sum,
+     Typeable mstate,
+     Typeable rstate,
+     VecStorable rstate,
+     Clip sum,
+     Typeable result) =>
+    Int ->
+    Vec Number ->
+    r mstate ->
+    r (row -> sum) ->
+    r rstate ->
+    r (sum -> Distr result) ->
+    BmcsF r (Distr result)
 
 instance HXFunctor XExprF where
   hxmap f g =
@@ -292,16 +313,19 @@ instance HFunctor ControlF where
   hmap f =
     \case
       CIfF (f -> cond) (f -> a) (f -> b) -> CIfF cond a b
+      CLoopF (f -> acc) (f -> cond) (f -> iter) -> CLoopF acc cond iter
 
 instance HFoldable ControlF where
   hfoldMap f =
     \case
       CIfF (f -> cond) (f -> a) (f -> b) -> cond <> a <> b
+      CLoopF (f -> acc) (f -> cond) (f -> iter) -> acc <> cond <> iter
 
 instance HTraversable ControlF where
   htraverse f =
     \case
       CIfF (f -> cond) (f -> a) (f -> b) -> CIfF <$> cond <*> a <*> b
+      CLoopF (f -> acc) (f -> cond) (f -> iter) -> CLoopF <$> acc <*> cond <*> iter
 
 instance HFunctor PrimF where
   hmap f =
@@ -485,6 +509,15 @@ lap w c = xwrap . hinject' $ XELaplaceF w c
 
 if_ :: Typeable a => CPSFuzz f Bool -> CPSFuzz f a -> CPSFuzz f a -> CPSFuzz f a
 if_ cond t f = xwrap . hinject' $ CIfF cond (toDeepRepr t) (toDeepRepr f)
+
+loop ::
+  (Typeable a, KnownSymbol s) =>
+  CPSFuzz f a ->
+  (Name s (CPSFuzz f a) -> CPSFuzz f Bool) ->
+  (Name s (CPSFuzz f a) -> CPSFuzz f (Distr a)) ->
+  CPSFuzz f (Distr a)
+loop acc cond iter =
+  xwrap . hinject' $ CLoopF acc (toDeepRepr cond) (toDeepRepr iter)
 
 just :: Typeable a => CPSFuzz f a -> CPSFuzz f (Maybe a)
 just = xwrap . hinject' . PJustF
@@ -864,6 +897,7 @@ fvControlF ::
   ControlF (K (S.Set UniqueName)) a ->
   K (S.Set UniqueName) a
 fvControlF (CIfF (unK -> cond) (unK -> a) (unK -> b)) = K $ cond <> a <> b
+fvControlF (CLoopF (unK -> acc) (unK -> cond) (unK -> iter)) = K $ acc <> cond <> iter
 
 fvControlFM ::
   FreshM m =>
@@ -890,6 +924,19 @@ namedControlFM (CIfF (unK -> cond) (unK -> a) (unK -> b)) = K $ do
           withHRefl @a @a' $ \HRefl ->
             withHRefl @a @b' $ \HRefl ->
               return . AnyNCPSFuzz . wrap . hinject' $ CIfF cond' a' b'
+namedControlFM (CLoopF ((unK -> acc) :: _ acc) ((unK -> cond) :: _ (acc -> Bool)) ((unK -> iter) :: _ (acc -> Distr acc))) = K $ do
+  acc' <- acc
+  cond' <- cond
+  iter' <- iter
+  case (acc', cond', iter') of
+    ( AnyNCPSFuzz (acc' :: _ acc'),
+      AnyNCPSFuzz (cond' :: _ acc_arrow_bool'),
+      AnyNCPSFuzz (iter' :: _ acc_arrow_distr_acc')
+     ) ->
+      withHRefl @acc @acc' $ \HRefl ->
+      withHRefl @(acc -> Bool) @acc_arrow_bool' $ \HRefl ->
+      withHRefl @(acc -> Distr acc) @(acc_arrow_distr_acc') $ \HRefl ->
+      return . AnyNCPSFuzz . wrap . hinject' $ CLoopF acc' cond' iter'
 
 fvPrimF ::
   PrimF (K (S.Set UniqueName)) a ->
@@ -1573,6 +1620,63 @@ resolveClip =
                 HRefl <- eqTypeRep (maybeT2) (typeRep @(,))
                 (a1Dict :: Dict (Clip a1)) <- withTypeable a1 $ resolveClip @a1
                 let tupleDict = withDict a1Dict $ withDict a2Dict $ Dict @(Clip (a1, a2))
+                return tupleDict
+            _ -> Nothing
+        _ -> Nothing
+
+resolveVecMonoid :: forall (a :: *). Typeable a => Maybe (Dict (VecMonoid a))
+resolveVecMonoid =
+  case eqTypeRep (typeRep @Number) (typeRep @a) of
+    Just HRefl -> Just Dict
+    _ -> do
+      case (typeRep @a) of
+        App maybeMaybe (a1 :: typeRep a1)
+          | SomeTypeRep maybeMaybe == SomeTypeRep (typeRep @Maybe) -> do
+            HRefl <- eqTypeRep (typeRepKind a1) (typeRepKind (typeRep @Int))
+            a1Dict <- withTypeable a1 $ resolveVecMonoid @a1
+            case eqTypeRep maybeMaybe (typeRep @Maybe) of
+              Just HRefl -> withDict a1Dict $ return (Dict @(VecMonoid (Maybe a1)))
+              _ -> Nothing
+        App con (a2 :: typeRep a2) -> do
+          HRefl <- eqTypeRep (typeRepKind a2) (typeRepKind (typeRep @Int))
+          (a2Dict :: Dict (VecMonoid a2)) <- withTypeable a2 $ resolveVecMonoid @a2
+          case con of
+            App maybeT2 (a1 :: TypeRep a1)
+              | SomeTypeRep maybeT2 == SomeTypeRep (typeRep @(,)) -> do
+                HRefl <- eqTypeRep (typeRepKind a1) (typeRepKind (typeRep @Int))
+                HRefl <- eqTypeRep (maybeT2) (typeRep @(,))
+                (a1Dict :: Dict (VecMonoid a1)) <- withTypeable a1 $ resolveVecMonoid @a1
+                let tupleDict = withDict a1Dict $ withDict a2Dict $ Dict @(VecMonoid (a1, a2))
+                return tupleDict
+            _ -> Nothing
+        _ -> Nothing
+
+
+resolveVecStorable :: forall (a :: *). Typeable a => Maybe (Dict (VecStorable a))
+resolveVecStorable =
+  case eqTypeRep (typeRep @Number) (typeRep @a) of
+    Just HRefl -> Just Dict
+    _ -> do
+      case (typeRep @a) of
+        App maybeMaybe (a1 :: typeRep a1)
+          | SomeTypeRep maybeMaybe == SomeTypeRep (typeRep @Maybe) -> do
+            HRefl <- eqTypeRep (typeRepKind a1) (typeRepKind (typeRep @Int))
+            a1MonoidDict <- withTypeable a1 $ resolveVecMonoid @a1
+            case eqTypeRep maybeMaybe (typeRep @Maybe) of
+              Just HRefl ->
+                withDict a1MonoidDict $
+                return (Dict @(VecStorable (Maybe a1)))
+              _ -> Nothing
+        App con (a2 :: typeRep a2) -> do
+          HRefl <- eqTypeRep (typeRepKind a2) (typeRepKind (typeRep @Int))
+          (a2Dict :: Dict (VecStorable a2)) <- withTypeable a2 $ resolveVecStorable @a2
+          case con of
+            App maybeT2 (a1 :: TypeRep a1)
+              | SomeTypeRep maybeT2 == SomeTypeRep (typeRep @(,)) -> do
+                HRefl <- eqTypeRep (typeRepKind a1) (typeRepKind (typeRep @Int))
+                HRefl <- eqTypeRep (maybeT2) (typeRep @(,))
+                (a1Dict :: Dict (VecStorable a1)) <- withTypeable a1 $ resolveVecStorable @a1
+                let tupleDict = withDict a1Dict $ withDict a2Dict $ Dict @(VecStorable (a1, a2))
                 return tupleDict
             _ -> Nothing
         _ -> Nothing

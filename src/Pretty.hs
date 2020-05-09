@@ -121,6 +121,14 @@ pControlF (CIfF cond a b) = P $ \prec ->
         string "if" <+> condDoc
           </> string "then" <+> aDoc
           </> string "else" <+> bDoc
+pControlF (CLoopF acc cond iter) = P $ \prec ->
+  let accDoc = runPretty acc (precedenceTable "App")
+      condDoc = runPretty cond (precedenceTable "App" + associativityTable "App")
+      iterDoc = runPretty iter (precedenceTable "App" + associativityTable "App"*2)
+  in parensIf (prec > precedenceTable "App") $
+       string "loop" <+> accDoc
+       <$$> nest 2 condDoc
+       <$$> nest 2 iterDoc
 
 pPrimF :: PrimF P a -> P a
 pPrimF (PLitF x) = P $ const . parens . text . show $ x
@@ -245,6 +253,9 @@ pNNormalizedF = pFlatBagOpF `sumAlg` pMainF
 
 pNMcsF :: NMcsF P a -> P a
 pNMcsF = pMcsF `sumAlg` pMainF
+
+pMain :: HFix MainF a -> Doc
+pMain = flip runPretty 0 . (hcata' pMainF)
 
 pNNormalized :: HFix NNormalizedF a -> Doc
 pNNormalized = flip runPretty 0 . (hcata' pNNormalizedF)
