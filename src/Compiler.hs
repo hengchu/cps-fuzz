@@ -2,6 +2,7 @@
 
 module Compiler where
 
+import Closure hiding (InternalError)
 import Control.Lens
 import Control.Monad
 import Control.Monad.Catch
@@ -199,6 +200,11 @@ data CompilerError
   | -- | We need a type that satisfies `Clip`, but
     --  instead got this.
     RequiresClip SomeTypeRep
+  | -- | We need a type that satisfies `VecStorable`, but
+    --  instead got this.
+    RequiresVecStorable SomeTypeRep
+  | RequiresRedZone Doc
+  | RequiresOrangeZone Doc
   | ReleasesPrivateInformation
   deriving (Show)
 
@@ -790,12 +796,68 @@ inflateM g db term = do
   let act = hcata' (inflateF @row g' db) term
   (act ^. inflate) S.empty
 
+closureConvertMcsF ::
+  ( MonadThrowWithStack m,
+    FreshM m
+  ) =>
+  McsF (HFix NBmcsF) a ->
+  m (HFix NBmcsF a)
+closureConvertMcsF (MRunF reprSize clip mf rf) =
+  case (project' @NRedZoneF mf, project' @MainF rf) of
+    (Just mf, Just rf) -> do
+      mfClsResult <- closureConvert mf (unK . hcata' (fAnyVarExprF `sumAlg` fAnyVarControlF `sumAlg` fAnyVarPrimF))
+      rfClsResult <- closureConvert rf (unK . hcata' (fAnyVarExprMonadF `sumAlg` fAnyVarExprF `sumAlg` fAnyVarControlF `sumAlg` fAnyVarPrimF))
+      case (mfClsResult, rfClsResult) of
+        (AlreadyClosed mf, AlreadyClosed rf) ->
+          return $ wrap . hinject' $ BRunF reprSize clip (wrap . hinject' $ PLitF ()) (inject' mf) (wrap . hinject' $ PLitF ()) (inject' rf)
+        (AlreadyClosed mf, Converted (rstate :: _ cls) rf) ->
+          case resolveVecStorable @cls of
+            Just d ->
+              withDict d
+                $ return
+                $ wrap . hinject'
+                $ BRunF reprSize clip (wrap . hinject' $ PLitF ()) (inject' mf) (inject' rstate) (inject' rf)
+            _ -> throwM' $ RequiresVecStorable (SomeTypeRep (typeRep @cls))
+        (Converted mstate mf, AlreadyClosed rf) ->
+          return $ wrap . hinject' $ BRunF reprSize clip (inject' mstate) (inject' mf) (wrap . hinject' $ PLitF ()) (inject' rf)
+        (Converted mstate mf, Converted (rstate :: _ cls) rf) ->
+          case resolveVecStorable @cls of
+            Just d ->
+              withDict d
+                $ return
+                $ wrap . hinject'
+                $ BRunF reprSize clip (inject' mstate) (inject' mf) (inject' rstate) (inject' rf)
+            _ -> throwM' $ RequiresVecStorable (SomeTypeRep (typeRep @cls))
+    (Nothing, _) -> throwM' $ RequiresRedZone (pNBmcs mf)
+    (_, Nothing) -> throwM' $ RequiresOrangeZone (pNBmcs rf)
+
+closureConvertF ::
+  ( MonadThrowWithStack m,
+    FreshM m
+  ) =>
+  NMcsF (HFix NBmcsF) a ->
+  m (HFix NBmcsF a)
+closureConvertF =
+  closureConvertMcsF
+  `sumAlgM` (return . wrap . hinject')
+  `sumAlgM` (return . wrap . hinject')
+  `sumAlgM` (return . wrap . hinject')
+  `sumAlgM` (return . wrap . hinject')
+
+closureConvertM ::
+  ( MonadThrowWithStack m,
+    FreshM m
+  ) =>
+  HFix NMcsF a ->
+  m (HFix NBmcsF a)
+closureConvertM = hcataM' closureConvertF
+
 compileM ::
   forall row a m.
   (FreshM m, MonadThrowWithStack m, Typeable row, Typeable a) =>
   String ->
   (forall f. HXFix CPSFuzzF f (Bag row) -> HXFix CPSFuzzF f (Distr a)) ->
-  m (HFix NMcsF (Distr a))
+  m (HFix NBmcsF (Distr a))
 compileM db prog = do
   dbName <- gfresh db
   namedTerm <- named' $ prog (xwrap . hinject' $ XEVarF dbName)
@@ -808,13 +870,13 @@ compileM db prog = do
   case secLvl of
     Private -> throwM' ReleasesPrivateInformation
     _ -> return ()
-  return term
+  closureConvertM term
 
 compile ::
   (Typeable row, Typeable a) =>
   String ->
   (forall f. HXFix CPSFuzzF f (Bag row) -> HXFix CPSFuzzF f (Distr a)) ->
-  Either SomeException (HFix NMcsF (Distr a))
+  Either SomeException (HFix NBmcsF (Distr a))
 compile db prog = flip evalStateT emptyNameState (compileM db prog)
 
 pullMapEffectsTrans' ::

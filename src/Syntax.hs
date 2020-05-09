@@ -88,9 +88,30 @@ newtype Vec a = Vec [a]
 data Var (a :: *) where
   Var :: Typeable a => UniqueName -> Var a
 
+data AnyVar where
+  AnyVar :: Typeable a => Var a -> AnyVar
+
 deriving instance Show (Var a)
 
 deriving instance Eq (Var a)
+
+deriving instance Ord (Var a)
+
+deriving instance Show AnyVar
+
+instance Eq AnyVar where
+  (AnyVar (v :: _ a)) == (AnyVar (u :: _ b)) =
+    case eqTypeRep (typeRep @a) (typeRep @b) of
+      Just HRefl -> v == u
+      _ -> False
+
+instance Ord AnyVar where
+  compare (AnyVar (v :: _ a)) (AnyVar (u :: _ b)) =
+    let ta = typeRep @a
+        tb = typeRep @b
+     in case eqTypeRep ta tb of
+          Just HRefl -> compare v u
+          _ -> compare (SomeTypeRep ta) (SomeTypeRep tb)
 
 data XExprF :: (* -> *) -> * -> * where
   XEVarF :: Typeable a => UniqueName -> XExprF r a
@@ -212,9 +233,9 @@ data BmcsF :: (* -> *) -> * -> * where
     Int ->
     Vec Number ->
     r mstate ->
-    r (row -> sum) ->
+    r (mstate -> row -> sum) ->
     r rstate ->
-    r (sum -> Distr result) ->
+    r (rstate -> sum -> Distr result) ->
     BmcsF r (Distr result)
 
 instance HXFunctor XExprF where
@@ -428,6 +449,24 @@ instance HTraversable McsF where
       MRunF reprSize clip (f -> mf) (f -> rf) ->
         MRunF <$> pure reprSize <*> pure clip <*> mf <*> rf
 
+instance HFunctor BmcsF where
+  hmap f =
+    \case
+      BRunF reprSize clip (f -> mstate) (f -> mf) (f -> rstate) (f -> rf) ->
+        BRunF reprSize clip mstate mf rstate rf
+
+instance HFoldable BmcsF where
+  hfoldMap f =
+    \case
+      BRunF _ _ (f -> mstate) (f -> mf) (f -> rstate) (f -> rf) ->
+        mstate <> mf <> rstate <> rf
+
+instance HTraversable BmcsF where
+  htraverse f =
+    \case
+      BRunF reprSize clip (f -> mstate) (f -> mf) (f -> rstate) (f -> rf) ->
+        BRunF <$> pure reprSize <*> pure clip <*> mstate <*> mf <*> rstate <*> rf
+
 -- | The functor-like variable `f` is the interpretation domain. Examples
 -- include: `Doc` for pretty-printing, `Identity` for evaluation, etc.
 type CPSFuzzF = BagOpF :+: XExprMonadF :+: XExprF :+: ControlF :+: PrimF
@@ -448,6 +487,8 @@ type NOrangeZoneF = ExprF :+: ControlF :+: PrimF
 type NNormalizedF = FlatBagOpF :+: MainF
 
 type NMcsF = McsF :+: MainF
+
+type NBmcsF = BmcsF :+: MainF
 
 type CPSFuzz f = HXFix CPSFuzzF f
 
@@ -840,6 +881,15 @@ namedBagOpFM (BSumF clip ((unK -> db) :: _ (Bag Number)) ((unK -> kont) :: _ (Nu
           withHRefl @(Number -> t) @num_arrow_t $ \HRefl ->
             return . AnyNCPSFuzz . wrap . hinject' $ BSumF clip db' kont'
 
+fAnyVarExprMonadF ::
+  ExprMonadF (K (S.Set AnyVar)) a ->
+  K (S.Set AnyVar) a
+fAnyVarExprMonadF (ELaplaceF _ (unK -> fvs)) = K fvs
+fAnyVarExprMonadF (EReturnF (unK -> fvs)) = K fvs
+fAnyVarExprMonadF (EBindF (unK -> fvs1) bound (unK -> fvs2)) =
+  K $
+    fvs1 `S.union` S.delete (AnyVar bound) fvs2
+
 fvExprMonadF ::
   ExprMonadF (K (S.Set UniqueName)) a ->
   K (S.Set UniqueName) a
@@ -924,6 +974,12 @@ namedXExprFM (XEAppF ((unK -> a) :: _ (a1 -> a)) ((unK -> b) :: _ a1)) = K $ do
           withHRefl @a1 @a1' $ \HRefl ->
             return . AnyNCPSFuzz . wrap . hinject' $ EAppF a' b'
 
+fAnyVarControlF ::
+  ControlF (K (S.Set AnyVar)) a ->
+  K (S.Set AnyVar) a
+fAnyVarControlF (CIfF (unK -> cond) (unK -> a) (unK -> b)) = K $ cond <> a <> b
+fAnyVarControlF (CLoopF (unK -> acc) (unK -> cond) (unK -> iter)) = K $ acc <> cond <> iter
+
 fvControlF ::
   ControlF (K (S.Set UniqueName)) a ->
   K (S.Set UniqueName) a
@@ -997,6 +1053,33 @@ fvPrimF (PIsJustF (unK -> a)) = K a
 fvPrimF (PPairF (unK -> a) (unK -> b)) = K $ a <> b
 fvPrimF (PFstF (unK -> a)) = K a
 fvPrimF (PSndF (unK -> a)) = K a
+
+fAnyVarPrimF ::
+  PrimF (K (S.Set AnyVar)) a ->
+  K (S.Set AnyVar) a
+fAnyVarPrimF (PLitF _) = K mempty
+fAnyVarPrimF (PAddF (unK -> a) (unK -> b)) = K $ a <> b
+fAnyVarPrimF (PSubF (unK -> a) (unK -> b)) = K $ a <> b
+fAnyVarPrimF (PMultF (unK -> a) (unK -> b)) = K $ a <> b
+fAnyVarPrimF (PDivF (unK -> a) (unK -> b)) = K $ a <> b
+fAnyVarPrimF (PAbsF (unK -> a)) = K a
+fAnyVarPrimF (PSignumF (unK -> a)) = K a
+fAnyVarPrimF (PExpF (unK -> a)) = K a
+fAnyVarPrimF (PSqrtF (unK -> a)) = K a
+fAnyVarPrimF (PLogF (unK -> a)) = K a
+fAnyVarPrimF (PGTF (unK -> a) (unK -> b)) = K $ a <> b
+fAnyVarPrimF (PGEF (unK -> a) (unK -> b)) = K $ a <> b
+fAnyVarPrimF (PLTF (unK -> a) (unK -> b)) = K $ a <> b
+fAnyVarPrimF (PLEF (unK -> a) (unK -> b)) = K $ a <> b
+fAnyVarPrimF (PEQF (unK -> a) (unK -> b)) = K $ a <> b
+fAnyVarPrimF (PNEQF (unK -> a) (unK -> b)) = K $ a <> b
+fAnyVarPrimF (PJustF (unK -> a)) = K a
+fAnyVarPrimF PNothingF = K mempty
+fAnyVarPrimF (PFromJustF (unK -> a)) = K a
+fAnyVarPrimF (PIsJustF (unK -> a)) = K a
+fAnyVarPrimF (PPairF (unK -> a) (unK -> b)) = K $ a <> b
+fAnyVarPrimF (PFstF (unK -> a)) = K a
+fAnyVarPrimF (PSndF (unK -> a)) = K a
 
 fvPrimFM ::
   FreshM m =>
@@ -1418,6 +1501,14 @@ swapGen ::
 swapGen var1 var2 = hcata' (swapGenF var1 var2)
 -}
 
+fAnyVarExprF ::
+  ExprF (K (S.Set AnyVar)) a ->
+  K (S.Set AnyVar) a
+fAnyVarExprF (EVarF v) = K (S.singleton (AnyVar v))
+fAnyVarExprF (ELamF v (unK -> body)) = K (S.delete (AnyVar v) body)
+fAnyVarExprF (EAppF (unK -> a) (unK -> b)) = K (a <> b)
+fAnyVarExprF (ECompF (unK -> bc) (unK -> ab)) = K (bc <> ab)
+
 fvExprF ::
   ExprF (K (S.Set UniqueName)) a ->
   K (S.Set UniqueName) a
@@ -1574,6 +1665,11 @@ fvMainF =
 
 vecConcat :: Vec a -> Vec a -> Vec a
 vecConcat (Vec as) (Vec bs) = Vec (as ++ bs)
+
+instance VecStorable () where
+  vecSize = 0
+  fromVec _ = ()
+  asVec _ = Vec []
 
 instance VecStorable Number where
   vecSize = 1
@@ -1842,6 +1938,12 @@ instance HInject (ExprF :+: ControlF :+: PrimF) MainF where
   hproject' _ = Nothing
 
 instance HInject McsF (McsF :+: h) where
+  hinject' = Inl
+
+  hproject' (Inl a) = Just a
+  hproject' _ = Nothing
+
+instance HInject BmcsF (BmcsF :+: h) where
   hinject' = Inl
 
   hproject' (Inl a) = Just a

@@ -97,12 +97,14 @@ pExprF :: ExprF P a -> P a
 pExprF (EVarF (Var x)) = P $ const (string (show x))
 pExprF (ELamF (Var bound :: _ t) body) = P $ \prec ->
   let bodyDoc = runPretty body 0
-      flatDoc = string "\\" <> (parens $ (string (show bound)) <+> string "::" <+> showTypeRep @t)
-                <+> string "->"
-                <+> bodyDoc
-      multilineDoc = string "\\" <> (parens $ (string (show bound)) <+> string "::" <+> showTypeRep @t)
-                     <+> string "->"
-                     <$$> nest 2 bodyDoc
+      flatDoc =
+        string "\\" <> (parens $ (string (show bound)) <+> string "::" <+> showTypeRep @t)
+          <+> string "->"
+          <+> bodyDoc
+      multilineDoc =
+        string "\\" <> (parens $ (string (show bound)) <+> string "::" <+> showTypeRep @t)
+          <+> string "->"
+          <$$> nest 2 bodyDoc
    in parens $
         flatAlt flatDoc multilineDoc
 pExprF (EAppF f arg) = P $ \prec ->
@@ -123,8 +125,10 @@ pControlF (CIfF cond a b) = P $ \prec ->
       bDoc = runPretty b (precedenceTable "App")
    in parensIf (prec >= precedenceTable "App") $
         string "if" <+> condDoc
-          <+> string "then" <+> aDoc
-          <+> string "else" <+> bDoc
+          <+> string "then"
+          <+> aDoc
+          <+> string "else"
+          <+> bDoc
 pControlF (CLoopF acc cond iter) = P $ \prec ->
   let accDoc = runPretty acc (precedenceTable "App")
       condDoc = runPretty cond (precedenceTable "App" + associativityTable "App")
@@ -238,13 +242,35 @@ pMcsF (MRunF reprSize clip mf rf) = P $ \prec ->
       clipDoc = parens . string . show $ clip
       mfDoc = runPretty mf (precedenceTable "App" + associativityTable "App" * 2)
       rfDoc = runPretty rf (precedenceTable "App" + associativityTable "App" * 3)
-      parts = vcat [mempty,
-                    string "reprSize" <+> equals <+> reprSizeDoc <> comma,
-                    string "clip" <+> equals <+> clipDoc <> comma,
-                    string "map" <+> equals <+> mfDoc <> comma,
-                    string "release" <+> equals <+> rfDoc <> comma
-                   ]
-  in string "bmcs" <+> braces (nest 2 parts)
+      parts =
+        vcat
+          [ mempty,
+            string "reprSize" <+> equals <+> reprSizeDoc <> comma,
+            string "clip" <+> equals <+> clipDoc <> comma,
+            string "map" <+> equals <+> mfDoc <> comma,
+            string "release" <+> equals <+> rfDoc <> comma
+          ]
+   in string "bmcs" <+> braces (nest 2 parts)
+
+pBmcsF :: BmcsF P a -> P a
+pBmcsF (BRunF reprSize clip mstate mf rstate rf) = P $ \prec ->
+  let reprSizeDoc = int reprSize
+      clipDoc = parens . string . show $ clip
+      mstateDoc = runPretty mstate (precedenceTable "App" + associativityTable "App" * 2)
+      mfDoc = runPretty mf (precedenceTable "App" + associativityTable "App" * 3)
+      rstateDoc = runPretty rstate (precedenceTable "App" + associativityTable "App" * 4)
+      rfDoc = runPretty rf (precedenceTable "App" + associativityTable "App" * 5)
+      parts =
+        vcat
+          [ mempty,
+            string "reprSize" <+> equals <+> reprSizeDoc <> comma,
+            string "clip" <+> equals <+> clipDoc <> comma,
+            string "map_state" <+> equals <+> mstateDoc <> comma,
+            string "map" <+> equals <+> mfDoc <> comma,
+            string "release_state" <+> equals <+> rstateDoc <> comma,
+            string "release" <+> equals <+> rfDoc <> comma
+          ]
+   in string "bmcs" <+> braces (nest 2 parts)
 
 pMainF :: MainF P a -> P a
 pMainF =
@@ -261,6 +287,9 @@ pNNormalizedF = pFlatBagOpF `sumAlg` pMainF
 
 pNMcsF :: NMcsF P a -> P a
 pNMcsF = pMcsF `sumAlg` pMainF
+
+pNBmcsF :: NBmcsF P a -> P a
+pNBmcsF = pBmcsF `sumAlg` pMainF
 
 pMain :: HFix MainF a -> Doc
 pMain = flip runPretty 0 . (hcata' pMainF)
@@ -281,6 +310,9 @@ pRedZoneF =
 pRedZone :: HFix NRedZoneF a -> Doc
 pRedZone = flip runPretty 0 . (hcata' pRedZoneF)
 
+pNBmcs :: HFix NBmcsF a -> Doc
+pNBmcs = flip runPretty 0 . (hcata' pNBmcsF)
+
 instance Show (HFix NCPSFuzzF a) where
   show prog = displayS (renderPretty 0.6 80 (pNCPSFuzz prog)) ""
 
@@ -289,3 +321,6 @@ instance Show (HFix NMcsF a) where
 
 instance Show (HFix NNormalizedF a) where
   show prog = displayS (renderPretty 0.6 80 (pNNormalized prog)) ""
+
+instance Show (HFix NBmcsF a) where
+  show prog = displayS (renderPretty 0.6 80 (pNBmcs prog)) ""

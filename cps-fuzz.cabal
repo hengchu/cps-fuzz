@@ -42,6 +42,7 @@ library
                 , Syntax
                 , Examples
                 , Compiler
+                , Closure
   default-extensions:
                    DataKinds
                  , DeriveGeneric
