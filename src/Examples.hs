@@ -140,15 +140,16 @@ bag_filter_sum_noise5 db =
 bag_filter_sum_noise6 :: forall f. CPSFuzz f (Bag Number) -> CPSFuzz f (Distr Number)
 bag_filter_sum_noise6 db =
   bag_filter_sum db $
-  \filter_sum -> do
-    $(named "s1") <- lap 1.0 filter_sum
-    $(named "s2") <- lap 1.0 filter_sum
-    bmap (plus (s1 * s2)) db $ \(N db2 :: Name "db_plus_1" _) ->
-      bsum 2 db2 $ \(N filter_sum2 :: Name "filter_sum2" _) -> do
-      $(named "s3") <- lap 2.0 filter_sum2
-      return $ s1 + s3
-  where plus :: CPSFuzz f Number -> Name "row" (CPSFuzz f Number) -> CPSFuzz f Number
-        plus a (N b) = a + b
+    \filter_sum -> do
+      $(named "s1") <- lap 1.0 filter_sum
+      $(named "s2") <- lap 1.0 filter_sum
+      bmap (plus (s1 * s2)) db $ \(N db2 :: Name "db_plus_1" _) ->
+        bsum 2 db2 $ \(N filter_sum2 :: Name "filter_sum2" _) -> do
+          $(named "s3") <- lap 2.0 filter_sum2
+          return $ s1 + s3
+  where
+    plus :: CPSFuzz f Number -> Name "row" (CPSFuzz f Number) -> CPSFuzz f Number
+    plus a (N b) = a + b
 
 bag_partition_sum_noise :: forall f. CPSFuzz f (Bag Number) -> CPSFuzz f (Distr Number)
 bag_partition_sum_noise db =

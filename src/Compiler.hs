@@ -839,10 +839,10 @@ closureConvertF ::
   m (HFix NBmcsF a)
 closureConvertF =
   closureConvertMcsF
-  `sumAlgM` (return . wrap . hinject')
-  `sumAlgM` (return . wrap . hinject')
-  `sumAlgM` (return . wrap . hinject')
-  `sumAlgM` (return . wrap . hinject')
+    `sumAlgM` (return . wrap . hinject')
+    `sumAlgM` (return . wrap . hinject')
+    `sumAlgM` (return . wrap . hinject')
+    `sumAlgM` (return . wrap . hinject')
 
 closureConvertM ::
   ( MonadThrowWithStack m,
