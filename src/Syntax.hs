@@ -905,6 +905,8 @@ fvControlFM ::
   K (m (S.Set UniqueName)) a
 fvControlFM (CIfF (unK -> cond) (unK -> a) (unK -> b)) =
   K $ S.union <$> cond <*> (S.union <$> a <*> b)
+fvControlFM (CLoopF (unK -> acc) (unK -> cond) (unK -> iter)) =
+  K $ S.union <$> acc <*> (S.union <$> cond <*> iter)
 
 namedControlFM ::
   forall a m.
