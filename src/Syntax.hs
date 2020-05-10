@@ -126,6 +126,10 @@ data ExprF :: (* -> *) -> * -> * where
   deriving (HXFunctor) via (DeriveHXFunctor ExprF)
 
 data XExprMonadF :: (* -> *) -> * -> * where
+  XEParF :: (Typeable a, Typeable b)
+        => r (Distr a)
+        -> r (Distr b)
+        -> XExprMonadF r (Distr (a, b))
   XELaplaceF :: Number -> r Number -> XExprMonadF r (Distr Number)
   XEReturnF :: Typeable a => r a -> XExprMonadF r (Distr a)
   XEBindF ::
@@ -135,6 +139,10 @@ data XExprMonadF :: (* -> *) -> * -> * where
     XExprMonadF r (Distr b)
 
 data ExprMonadF :: (* -> *) -> * -> * where
+  EParF :: (Typeable a, Typeable b)
+        => r (Distr a)
+        -> r (Distr b)
+        -> ExprMonadF r (Distr (a, b))
   ELaplaceF :: Number -> r Number -> ExprMonadF r (Distr Number)
   EReturnF :: Typeable a => r a -> ExprMonadF r (Distr a)
   EBindF :: (Typeable a, Typeable b) => r (Distr a) -> Var a -> r (Distr b) -> ExprMonadF r (Distr b)
@@ -272,6 +280,7 @@ instance HTraversable ExprF where
 instance HFunctor ExprMonadF where
   hmap f =
     \case
+      EParF (f -> a) (f -> b) -> EParF a b
       ELaplaceF w (f -> c) -> ELaplaceF w c
       EReturnF (f -> a) -> EReturnF a
       EBindF (f -> m) bound (f -> k) -> EBindF m bound k
@@ -279,6 +288,7 @@ instance HFunctor ExprMonadF where
 instance HFoldable ExprMonadF where
   hfoldMap f =
     \case
+      EParF (f -> a) (f -> b) -> a <> b
       ELaplaceF _ (f -> c) -> c
       EReturnF (f -> a) -> a
       EBindF (f -> m) _ (f -> k) -> m <> k
@@ -286,6 +296,7 @@ instance HFoldable ExprMonadF where
 instance HTraversable ExprMonadF where
   htraverse f =
     \case
+      EParF (f -> a) (f -> b) -> EParF <$> a <*> b
       ELaplaceF w (f -> c) -> ELaplaceF <$> pure w <*> c
       EReturnF (f -> a) -> EReturnF <$> a
       EBindF (f -> m) bound (f -> k) -> EBindF <$> m <*> pure bound <*> k
@@ -293,6 +304,7 @@ instance HTraversable ExprMonadF where
 instance HXFunctor XExprMonadF where
   hxmap f g =
     \case
+      XEParF (f -> a) (f -> b) -> XEParF a b
       XELaplaceF c w -> XELaplaceF c (f w)
       XEReturnF a -> XEReturnF (f a)
       XEBindF a (k :: Name s _ -> _) -> XEBindF @s (f a) (f . k . withName . g . unName)
@@ -554,6 +566,15 @@ share = flip app
 lap :: Number -> CPSFuzz f Number -> CPSFuzz f (Distr Number)
 lap w c = xwrap . hinject' $ XELaplaceF w c
 
+xpar :: (Typeable a, Typeable b) => CPSFuzz f (Distr a) -> CPSFuzz f (Distr b) -> CPSFuzz f (Distr (a, b))
+xpar a b = xwrap . hinject' $ XEParF a b
+
+xpfst :: (Typeable a, Typeable b) => CPSFuzz f (a, b) -> CPSFuzz f a
+xpfst a = xwrap . hinject' $ PFstF a
+
+xpsnd :: (Typeable a, Typeable b) => CPSFuzz f (a, b) -> CPSFuzz f b
+xpsnd a = xwrap . hinject' $ PSndF a
+
 if_ :: Typeable a => CPSFuzz f Bool -> CPSFuzz f a -> CPSFuzz f a -> CPSFuzz f a
 if_ cond t f = xwrap . hinject' $ CIfF cond (toDeepRepr t) (toDeepRepr f)
 
@@ -705,6 +726,17 @@ compose ::
   HFix h (a -> b) ->
   HFix h (a -> c)
 compose bc ab = wrap . hinject' $ ECompF bc ab
+
+par ::
+  forall h a b.
+  ( HInject ExprMonadF h,
+    Typeable a,
+    Typeable b
+  ) =>
+  HFix h (Distr a) ->
+  HFix h (Distr b) ->
+  HFix h (Distr (a, b))
+par a b = wrap . hinject' $ EParF a b
 
 pair ::
   forall h a b.
@@ -884,6 +916,7 @@ namedBagOpFM (BSumF clip ((unK -> db) :: _ (Bag Number)) ((unK -> kont) :: _ (Nu
 fAnyVarExprMonadF ::
   ExprMonadF (K (S.Set AnyVar)) a ->
   K (S.Set AnyVar) a
+fAnyVarExprMonadF (EParF (unK -> a) (unK -> b)) = K $ a <> b
 fAnyVarExprMonadF (ELaplaceF _ (unK -> fvs)) = K fvs
 fAnyVarExprMonadF (EReturnF (unK -> fvs)) = K fvs
 fAnyVarExprMonadF (EBindF (unK -> fvs1) bound (unK -> fvs2)) =
@@ -893,6 +926,7 @@ fAnyVarExprMonadF (EBindF (unK -> fvs1) bound (unK -> fvs2)) =
 fvExprMonadF ::
   ExprMonadF (K (S.Set UniqueName)) a ->
   K (S.Set UniqueName) a
+fvExprMonadF (EParF (unK -> a) (unK -> b)) = K $ a <> b
 fvExprMonadF (ELaplaceF _ (unK -> fvs)) = K fvs
 fvExprMonadF (EReturnF (unK -> fvs)) = K fvs
 fvExprMonadF (EBindF (unK -> fvs1) (Var bound) (unK -> fvs2)) =
@@ -903,6 +937,7 @@ fvXExprMonadF ::
   FreshM m =>
   XExprMonadF (K (m (S.Set UniqueName))) a ->
   K (m (S.Set UniqueName)) a
+fvXExprMonadF (XEParF (unK -> a) (unK -> b)) = K $ S.union <$> a <*> b
 fvXExprMonadF (XELaplaceF _ (unK -> w)) = K w
 fvXExprMonadF (XEReturnF (unK -> a)) = K a
 fvXExprMonadF (XEBindF (unK -> m) f) = K $ do
@@ -915,6 +950,16 @@ namedXExprMonadFM ::
   (MonadThrowWithStack m, FreshM m) =>
   XExprMonadF (K (m AnyNCPSFuzz)) a ->
   K (m AnyNCPSFuzz) a
+namedXExprMonadFM (XEParF ((unK -> a) :: _ (Distr a)) ((unK -> b) :: _ (Distr b))) = K $ do
+  a' <- a
+  b' <- b
+  case (a', b') of
+    (AnyNCPSFuzz (a' :: _ distra),
+     AnyNCPSFuzz (b' :: _ distrb)) ->
+      withHRefl @(Distr a) @distra $ \HRefl ->
+        withHRefl @(Distr b) @distrb $ \HRefl -> do
+      return $ AnyNCPSFuzz . wrap . hinject' $ EParF a' b'
+
 namedXExprMonadFM (XEReturnF (unK -> a)) = K $ do
   AnyNCPSFuzz a' <- a
   return . AnyNCPSFuzz . wrap . hinject' $ EReturnF a'

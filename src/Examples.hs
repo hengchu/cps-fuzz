@@ -70,9 +70,11 @@ bag_filter_sum_noise :: forall f. CPSFuzz f (Bag Number) -> CPSFuzz f (Distr Num
 bag_filter_sum_noise db =
   bag_filter_sum db $
     \filter_sum -> do
-      $(named "s1'") <- lap 1.0 filter_sum
-      $(named "s2'") <- lap 2.0 filter_sum
-      return (s1' + s2')
+      $(named "s123") <- xpar (xpar (lap 1.0 filter_sum) (lap 2.0 filter_sum)) (lap 3.0 filter_sum)
+      let s1 = xpfst $ xpfst s123
+      let s2 = xpsnd $ xpfst s123
+      let s3 = xpsnd s123
+      return (s1 + s2 + s3)
 
 bag_filter_sum_noise2 :: forall f. CPSFuzz f (Bag Number) -> CPSFuzz f (Distr Number)
 bag_filter_sum_noise2 db =
