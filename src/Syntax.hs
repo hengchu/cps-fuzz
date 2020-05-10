@@ -126,10 +126,11 @@ data ExprF :: (* -> *) -> * -> * where
   deriving (HXFunctor) via (DeriveHXFunctor ExprF)
 
 data XExprMonadF :: (* -> *) -> * -> * where
-  XEParF :: (Typeable a, Typeable b)
-        => r (Distr a)
-        -> r (Distr b)
-        -> XExprMonadF r (Distr (a, b))
+  XEParF ::
+    (Typeable a, Typeable b) =>
+    r (Distr a) ->
+    r (Distr b) ->
+    XExprMonadF r (Distr (a, b))
   XELaplaceF :: Number -> r Number -> XExprMonadF r (Distr Number)
   XEReturnF :: Typeable a => r a -> XExprMonadF r (Distr a)
   XEBindF ::
@@ -139,10 +140,11 @@ data XExprMonadF :: (* -> *) -> * -> * where
     XExprMonadF r (Distr b)
 
 data ExprMonadF :: (* -> *) -> * -> * where
-  EParF :: (Typeable a, Typeable b)
-        => r (Distr a)
-        -> r (Distr b)
-        -> ExprMonadF r (Distr (a, b))
+  EParF ::
+    (Typeable a, Typeable b) =>
+    r (Distr a) ->
+    r (Distr b) ->
+    ExprMonadF r (Distr (a, b))
   ELaplaceF :: Number -> r Number -> ExprMonadF r (Distr Number)
   EReturnF :: Typeable a => r a -> ExprMonadF r (Distr a)
   EBindF :: (Typeable a, Typeable b) => r (Distr a) -> Var a -> r (Distr b) -> ExprMonadF r (Distr b)
@@ -954,12 +956,12 @@ namedXExprMonadFM (XEParF ((unK -> a) :: _ (Distr a)) ((unK -> b) :: _ (Distr b)
   a' <- a
   b' <- b
   case (a', b') of
-    (AnyNCPSFuzz (a' :: _ distra),
-     AnyNCPSFuzz (b' :: _ distrb)) ->
-      withHRefl @(Distr a) @distra $ \HRefl ->
-        withHRefl @(Distr b) @distrb $ \HRefl -> do
-      return $ AnyNCPSFuzz . wrap . hinject' $ EParF a' b'
-
+    ( AnyNCPSFuzz (a' :: _ distra),
+      AnyNCPSFuzz (b' :: _ distrb)
+      ) ->
+        withHRefl @(Distr a) @distra $ \HRefl ->
+          withHRefl @(Distr b) @distrb $ \HRefl -> do
+            return $ AnyNCPSFuzz . wrap . hinject' $ EParF a' b'
 namedXExprMonadFM (XEReturnF (unK -> a)) = K $ do
   AnyNCPSFuzz a' <- a
   return . AnyNCPSFuzz . wrap . hinject' $ EReturnF a'

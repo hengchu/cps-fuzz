@@ -716,37 +716,42 @@ inflateExprMonadF g db term@(EParF a b) =
       ogTerm = wrap . hinject' $ EParF (a ^. original) (b ^. original)
       aFvs = a ^. freeVars
       bFvs = b ^. freeVars
-  in DelayedInflate fvs ogTerm $ \released -> do
-    case (aFvs `S.isSubsetOf` released,
-          bFvs `S.isSubsetOf` released) of
-      (True, _) ->
-        throwM' $ InvalidParArgument (pMain $ a ^. original)
-      (_, True) ->
-        throwM' $ InvalidParArgument (pMain $ b ^. original)
-      (False, False) -> do
-        (a'secLvl, a') <- (a ^. inflate) released
-        (b'secLvl, b') <- (b ^. inflate) released
-        case (hproject' @McsF . unwrap $ a',
-              hproject' @McsF . unwrap $ b') of
-          (Just (MRunF aReprSize aClipBound (aMf :: _ (arow -> asum)) aRf),
-           Just (MRunF bReprSize bClipBound (bMf :: _ (brow -> bsum)) bRf)) ->
-            withHRefl @arow @brow $ \HRefl -> do
-            let reprSize = aReprSize + bReprSize
-            let clipBound = vecConcat aClipBound bClipBound
-            mfInputName <- gfresh "par_map_input"
-            let mfInputVar = Var @arow mfInputName
-            let mfInputTerm = wrap . hinject' $ EVarF mfInputVar
-            let mf = wrap . hinject' $ ELamF mfInputVar (pair (aMf %@ mfInputTerm) (bMf %@ mfInputTerm))
-            rfInputName <- gfresh "par_release_input"
-            let rfInputVar = Var @(asum, bsum) rfInputName
-            let rfInputTerm = wrap . hinject' $ EVarF rfInputVar
-            let rf = wrap . hinject' $ ELamF rfInputVar $ par (aRf %@ pfst rfInputTerm) (bRf %@ psnd rfInputTerm)
-            return (a'secLvl `joinSecLvl` b'secLvl,
-                    wrap . hinject' $ MRunF reprSize clipBound mf rf)
-          (Nothing, _) ->
+   in DelayedInflate fvs ogTerm $ \released -> do
+        case ( aFvs `S.isSubsetOf` released,
+               bFvs `S.isSubsetOf` released
+             ) of
+          (True, _) ->
             throwM' $ InvalidParArgument (pMain $ a ^. original)
-          (_, Nothing) ->
+          (_, True) ->
             throwM' $ InvalidParArgument (pMain $ b ^. original)
+          (False, False) -> do
+            (a'secLvl, a') <- (a ^. inflate) released
+            (b'secLvl, b') <- (b ^. inflate) released
+            case ( hproject' @McsF . unwrap $ a',
+                   hproject' @McsF . unwrap $ b'
+                 ) of
+              ( Just (MRunF aReprSize aClipBound (aMf :: _ (arow -> asum)) aRf),
+                Just (MRunF bReprSize bClipBound (bMf :: _ (brow -> bsum)) bRf)
+                ) ->
+                  withHRefl @arow @brow $ \HRefl -> do
+                    let reprSize = aReprSize + bReprSize
+                    let clipBound = vecConcat aClipBound bClipBound
+                    mfInputName <- gfresh "par_map_input"
+                    let mfInputVar = Var @arow mfInputName
+                    let mfInputTerm = wrap . hinject' $ EVarF mfInputVar
+                    let mf = wrap . hinject' $ ELamF mfInputVar (pair (aMf %@ mfInputTerm) (bMf %@ mfInputTerm))
+                    rfInputName <- gfresh "par_release_input"
+                    let rfInputVar = Var @(asum, bsum) rfInputName
+                    let rfInputTerm = wrap . hinject' $ EVarF rfInputVar
+                    let rf = wrap . hinject' $ ELamF rfInputVar $ par (aRf %@ pfst rfInputTerm) (bRf %@ psnd rfInputTerm)
+                    return
+                      ( a'secLvl `joinSecLvl` b'secLvl,
+                        wrap . hinject' $ MRunF reprSize clipBound mf rf
+                      )
+              (Nothing, _) ->
+                throwM' $ InvalidParArgument (pMain $ a ^. original)
+              (_, Nothing) ->
+                throwM' $ InvalidParArgument (pMain $ b ^. original)
 
 inflateGenF ::
   (HInject h MainF, HFunctor h, Monad m) =>

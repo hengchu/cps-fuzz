@@ -81,7 +81,7 @@ pExprMonadF :: ExprMonadF P a -> P a
 pExprMonadF (EParF a b) = P $ \prec ->
   let aDoc = runPretty a (precedenceTable "App")
       bDoc = runPretty b (precedenceTable "App" + associativityTable "App")
-  in parensIf (prec >= precedenceTable "App") $ string "par" <+> aDoc <+> bDoc
+   in parensIf (prec >= precedenceTable "App") $ string "par" <+> aDoc <+> bDoc
 pExprMonadF (ELaplaceF w c) = P $ \prec ->
   let wDoc = double w
       cDoc = runPretty c (precedenceTable "App" + associativityTable "App")
