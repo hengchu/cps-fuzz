@@ -169,6 +169,8 @@ data PrimF :: (* -> *) -> * -> * where
   PLEF :: (Typeable a, Ord a) => r a -> r a -> PrimF r Bool
   PEQF :: (Typeable a, Ord a) => r a -> r a -> PrimF r Bool
   PNEQF :: (Typeable a, Ord a) => r a -> r a -> PrimF r Bool
+  PAndF :: r Bool -> r Bool -> PrimF r Bool
+  POrF :: r Bool -> r Bool -> PrimF r Bool
   -- Data structures.
   PJustF :: Typeable a => r a -> PrimF r (Maybe a)
   PNothingF :: Typeable a => PrimF r (Maybe a)
@@ -384,6 +386,8 @@ instance HFunctor PrimF where
       PLEF (f -> a) (f -> b) -> PLEF a b
       PEQF (f -> a) (f -> b) -> PEQF a b
       PNEQF (f -> a) (f -> b) -> PNEQF a b
+      PAndF (f -> a) (f -> b) -> PAndF a b
+      POrF (f -> a) (f -> b) -> POrF a b
       PJustF (f -> a) -> PJustF a
       PNothingF -> PNothingF
       PFromJustF (f -> a) -> PFromJustF a
@@ -411,6 +415,8 @@ instance HFoldable PrimF where
       PLEF (f -> a) (f -> b) -> a <> b
       PEQF (f -> a) (f -> b) -> a <> b
       PNEQF (f -> a) (f -> b) -> a <> b
+      PAndF (f -> a) (f -> b) -> a <> b
+      POrF (f -> a) (f -> b) -> a <> b
       PJustF (f -> a) -> a
       PNothingF -> mempty
       PFromJustF (f -> a) -> a
@@ -438,6 +444,8 @@ instance HTraversable PrimF where
       PLEF (f -> a) (f -> b) -> PLEF <$> a <*> b
       PEQF (f -> a) (f -> b) -> PEQF <$> a <*> b
       PNEQF (f -> a) (f -> b) -> PNEQF <$> a <*> b
+      PAndF (f -> a) (f -> b) -> PAndF <$> a <*> b
+      POrF (f -> a) (f -> b) -> POrF <$> a <*> b
       PJustF (f -> a) -> PJustF <$> a
       PNothingF -> pure PNothingF
       PFromJustF (f -> a) -> PFromJustF <$> a
@@ -576,6 +584,24 @@ xpfst a = xwrap . hinject' $ PFstF a
 
 xpsnd :: (Typeable a, Typeable b) => CPSFuzz f (a, b) -> CPSFuzz f b
 xpsnd a = xwrap . hinject' $ PSndF a
+
+xppair :: (Typeable a, Typeable b) => CPSFuzz f a -> CPSFuzz f b -> CPSFuzz f (a, b)
+xppair a b = xwrap . hinject' $ PPairF a b
+
+infixr 3 %&&
+infixr 2 %||
+
+(%&&) :: CPSFuzz f Bool -> CPSFuzz f Bool -> CPSFuzz f Bool
+(%&&) = xpand
+
+(%||) :: CPSFuzz f Bool -> CPSFuzz f Bool -> CPSFuzz f Bool
+(%||) = xpor
+
+xpand :: CPSFuzz f Bool -> CPSFuzz f Bool -> CPSFuzz f Bool
+xpand a b = xwrap . hinject' $ PAndF a b
+
+xpor :: CPSFuzz f Bool -> CPSFuzz f Bool -> CPSFuzz f Bool
+xpor a b = xwrap . hinject' $ POrF a b
 
 if_ :: Typeable a => CPSFuzz f Bool -> CPSFuzz f a -> CPSFuzz f a -> CPSFuzz f a
 if_ cond t f = xwrap . hinject' $ CIfF cond (toDeepRepr t) (toDeepRepr f)
@@ -1093,6 +1119,8 @@ fvPrimF (PLTF (unK -> a) (unK -> b)) = K $ a <> b
 fvPrimF (PLEF (unK -> a) (unK -> b)) = K $ a <> b
 fvPrimF (PEQF (unK -> a) (unK -> b)) = K $ a <> b
 fvPrimF (PNEQF (unK -> a) (unK -> b)) = K $ a <> b
+fvPrimF (PAndF (unK -> a) (unK -> b)) = K $ a <> b
+fvPrimF (POrF (unK -> a) (unK -> b)) = K $ a <> b
 fvPrimF (PJustF (unK -> a)) = K a
 fvPrimF PNothingF = K mempty
 fvPrimF (PFromJustF (unK -> a)) = K a
@@ -1120,6 +1148,8 @@ fAnyVarPrimF (PLTF (unK -> a) (unK -> b)) = K $ a <> b
 fAnyVarPrimF (PLEF (unK -> a) (unK -> b)) = K $ a <> b
 fAnyVarPrimF (PEQF (unK -> a) (unK -> b)) = K $ a <> b
 fAnyVarPrimF (PNEQF (unK -> a) (unK -> b)) = K $ a <> b
+fAnyVarPrimF (PAndF (unK -> a) (unK -> b)) = K $ a <> b
+fAnyVarPrimF (POrF (unK -> a) (unK -> b)) = K $ a <> b
 fAnyVarPrimF (PJustF (unK -> a)) = K a
 fAnyVarPrimF PNothingF = K mempty
 fAnyVarPrimF (PFromJustF (unK -> a)) = K a
@@ -1148,6 +1178,8 @@ fvPrimFM (PLTF (unK -> a) (unK -> b)) = K $ S.union <$> a <*> b
 fvPrimFM (PLEF (unK -> a) (unK -> b)) = K $ S.union <$> a <*> b
 fvPrimFM (PEQF (unK -> a) (unK -> b)) = K $ S.union <$> a <*> b
 fvPrimFM (PNEQF (unK -> a) (unK -> b)) = K $ S.union <$> a <*> b
+fvPrimFM (PAndF (unK -> a) (unK -> b)) = K $ S.union <$> a <*> b
+fvPrimFM (POrF (unK -> a) (unK -> b)) = K $ S.union <$> a <*> b
 fvPrimFM (PJustF (unK -> a)) = K a
 fvPrimFM PNothingF = K $ pure mempty
 fvPrimFM (PFromJustF (unK -> a)) = K a
@@ -1261,6 +1293,12 @@ namedPrimFM (PEQF ((unK -> a) :: _ p) (unK -> b)) = K
 namedPrimFM (PNEQF ((unK -> a) :: _ p) (unK -> b)) = K
   $ namedPrimFMBinop @Ord @p a b
   $ \a b -> wrap . hinject' $ PNEQF a b
+namedPrimFM (PAndF (unK -> a) (unK -> b)) = K
+  $ namedPrimFMBinop @Typeable @Bool a b
+  $ \a b -> wrap . hinject' $ PAndF a b
+namedPrimFM (POrF (unK -> a) (unK -> b)) = K
+  $ namedPrimFMBinop @Typeable @Bool a b
+  $ \a b -> wrap . hinject' $ POrF a b
 namedPrimFM (PJustF ((unK -> a) :: _ p)) =
   K
     $ namedPrimFMUnop @Typeable @p a

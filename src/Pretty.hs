@@ -214,6 +214,16 @@ pPrimF (PNEQF a b) = P $ \prec ->
       bDoc = runPretty b (precedenceTable "/=" + associativityTable "/=")
    in parensIf (prec >= precedenceTable "/=") $
         aDoc <+> string "/=" <+> bDoc
+pPrimF (PAndF a b) = P $ \prec ->
+  let aDoc = runPretty a (precedenceTable "&&")
+      bDoc = runPretty b (precedenceTable "&&" + associativityTable "&&")
+  in parensIf (prec >= precedenceTable "&&") $
+       aDoc <+> string "&&" <+> bDoc
+pPrimF (POrF a b) = P $ \prec ->
+  let aDoc = runPretty a (precedenceTable "||")
+      bDoc = runPretty b (precedenceTable "||" + associativityTable "||")
+  in parensIf (prec >= precedenceTable "||") $
+       aDoc <+> string "||" <+> bDoc
 pPrimF (PJustF a) = P $ \prec ->
   let aDoc = runPretty a (precedenceTable "App")
    in parensIf (prec >= precedenceTable "App") $
