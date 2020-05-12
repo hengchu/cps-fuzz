@@ -43,6 +43,7 @@ library
                 , Examples
                 , Compiler
                 , Closure
+                , Extraction
   default-extensions:
                    DataKinds
                  , DeriveGeneric

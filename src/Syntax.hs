@@ -153,7 +153,7 @@ data ExprMonadF :: (* -> *) -> * -> * where
 -- | Primitives supported by the language.
 data PrimF :: (* -> *) -> * -> * where
   -- Arithmetics related stuff.
-  PLitF :: (Typeable a, Show a) => a -> PrimF r a
+  PLitF :: (Typeable a, Show a, IsLiteral a) => a -> PrimF r a
   PAddF :: (Num a, Typeable a) => r a -> r a -> PrimF r a
   PSubF :: (Num a, Typeable a) => r a -> r a -> PrimF r a
   PMultF :: (Num a, Typeable a) => r a -> r a -> PrimF r a
@@ -551,7 +551,7 @@ instance SynMonad (CPSFuzz f) Distr where
   m >>=. f = xwrap . hinject' $ XEBindF m f
   ret = xwrap . hinject' . XEReturnF
 
-lit :: (Typeable a, Show a) => a -> CPSFuzz f a
+lit :: (Typeable a, Show a, IsLiteral a) => a -> CPSFuzz f a
 lit = xwrap . hinject' . PLitF
 
 var ::
@@ -700,7 +700,7 @@ bsum ::
 bsum clip input kont =
   xwrap . hinject' $ BSumF (Vec [clip]) input (toDeepRepr kont)
 
-instance (Typeable a, Num a, Show a) => Num (CPSFuzz f a) where
+instance (Typeable a, Num a, Show a, IsLiteral a) => Num (CPSFuzz f a) where
   a + b = xwrap . hinject' $ PAddF a b
   a * b = xwrap . hinject' $ PMultF a b
   a - b = xwrap . hinject' $ PSubF a b
@@ -708,7 +708,7 @@ instance (Typeable a, Num a, Show a) => Num (CPSFuzz f a) where
   signum = xwrap . hinject' . PSignumF
   fromInteger = xwrap . hinject' . PLitF . fromInteger
 
-instance (Typeable a, Fractional a, Show a) => Fractional (CPSFuzz f a) where
+instance (Typeable a, Fractional a, Show a, IsLiteral a) => Fractional (CPSFuzz f a) where
   a / b = xwrap . hinject' $ PDivF a b
   fromRational = xwrap . hinject' . PLitF . fromRational
 
@@ -2036,6 +2036,28 @@ instance HInject BmcsF (BmcsF :+: h) where
 
 -- not sure why this doesn't work
 --deriving via (DeriveHInjectTrans NRedZoneF MainF NMcsF) instance (HInject NRedZoneF NMcsF)
+
+data Literal =
+  I Int
+  | D Double
+  | P (Literal, Literal)
+  | U
+  deriving (Show, Eq, Ord)
+
+class IsLiteral a where
+  toLiteral :: a -> Literal
+
+instance IsLiteral Int where
+  toLiteral = I
+
+instance IsLiteral Double where
+  toLiteral = D
+
+instance IsLiteral () where
+  toLiteral _ = U
+
+instance (IsLiteral a, IsLiteral b) => IsLiteral (a, b) where
+  toLiteral (a, b) = P (toLiteral a, toLiteral b)
 
 -- ####################
 -- # Lenses to expose #

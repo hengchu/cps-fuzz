@@ -4,7 +4,7 @@ module Pretty where
 
 import Control.Monad.State.Strict
 import HFunctor
-import Syntax
+import Syntax hiding (Literal(..))
 import Text.PrettyPrint.ANSI.Leijen
 import Type.Reflection
 import Prelude hiding ((<$>))
