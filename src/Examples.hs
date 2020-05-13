@@ -232,8 +232,13 @@ initialCentroids = xppair (xppair c1 c2) c3
         c2 = xppair 0.5 0.5
         c3 = xppair 0.0 0.0
 
-kmeans_iter :: CPSFuzz f Centroid3 -> CPSFuzz f (Bag Point) -> CPSFuzz f (Distr Centroid3)
-kmeans_iter centroids db =
+kmeans_iter_k ::
+  Typeable r =>
+  CPSFuzz f Centroid3 ->
+  CPSFuzz f (Bag Point) ->
+  (CPSFuzz f Centroid3 -> CPSFuzz f (Distr r)) ->
+  CPSFuzz f (Distr r)
+kmeans_iter_k centroids db kont =
   let c3 = xpsnd centroids
       c2 = xpsnd (xpfst centroids)
       c1 = xpfst (xpfst centroids)
@@ -246,48 +251,69 @@ kmeans_iter centroids db =
      totalCoords part2 $ \part2_total_coords ->
      countPoints part2 $ \part2_size ->
      totalCoords part3 $ \part3_total_coords ->
-     countPoints part3 $ \part3_size ->
-     let part1_total_coords_named = N part1_total_coords :: Name "part1_total_coords" _
-         part2_total_coords_named = N part2_total_coords :: Name "part2_total_coords" _
-         part3_total_coords_named = N part3_total_coords :: Name "part3_total_coords" _
-         part1x = projx part1_total_coords_named
-         part1y = projy part1_total_coords_named
-         part2x = projx part2_total_coords_named
-         part2y = projy part2_total_coords_named
-         part3x = projx part3_total_coords_named
-         part3y = projy part3_total_coords_named
-     in do
-       $(named "noised_values") <- xpar (lap 1.0 part1x)
-                                        (xpar (lap 1.0 part1y)
-                                              (xpar (lap 1.0 part1_size)
-                                                    (xpar (lap 1.0 part2x)
-                                                          (xpar (lap 1.0 part2y)
-                                                                (xpar (lap 1.0 part2_size)
-                                                                      (xpar (lap 1.0 part3x)
-                                                                            (xpar (lap 1.0 part3y)
-                                                                                  (lap 1.0 part3_size)
-                                                                            )
-                                                                      )
-                                                                )
-                                                          )
-                                                    )
-                                              )
-                                        )
-       let p1x = xpfst noised_values
-           p1y = xpfst (xpsnd noised_values)
-           p1len = xpfst (xpsnd (xpsnd noised_values))
-           p2x = xpfst (xpsnd (xpsnd (xpsnd noised_values)))
-           p2y = xpfst (xpsnd (xpsnd (xpsnd (xpsnd noised_values))))
-           p2len = xpfst (xpsnd (xpsnd (xpsnd (xpsnd (xpsnd noised_values)))))
-           p3x = xpfst (xpsnd (xpsnd (xpsnd (xpsnd (xpsnd (xpsnd noised_values))))))
-           p3y = xpfst (xpsnd (xpsnd (xpsnd (xpsnd (xpsnd (xpsnd (xpsnd noised_values)))))))
-           p3len = xpsnd (xpsnd (xpsnd (xpsnd (xpsnd (xpsnd (xpsnd (xpsnd noised_values)))))))
-           c1 = xppair (p1x / p1len) (p1y / p1len)
-           c2 = xppair (p2x / p2len) (p2y / p2len)
-           c3 = xppair (p3x / p3len) (p3y / p3len)
-           cs = xppair (xppair c1 c2) c3
-       return cs
+     countPoints part3 $ \part3_size -> do
+       $(named "cs") <- noise_and_release
+                          part1_total_coords part1_size
+                          part2_total_coords part2_size
+                          part3_total_coords part3_size
+       kont cs
   where zeroPoint = xppair 0 0
+
+        noise_and_release part1_total_coords part1_size part2_total_coords part2_size part3_total_coords part3_size = do
+          let part1_total_coords_named = N part1_total_coords :: Name "part1_total_coords" _
+              part2_total_coords_named = N part2_total_coords :: Name "part2_total_coords" _
+              part3_total_coords_named = N part3_total_coords :: Name "part3_total_coords" _
+              part1x = projx part1_total_coords_named
+              part1y = projy part1_total_coords_named
+              part2x = projx part2_total_coords_named
+              part2y = projy part2_total_coords_named
+              part3x = projx part3_total_coords_named
+              part3y = projy part3_total_coords_named
+
+          $(named "noised_values") <- xpar (lap 1.0 part1x)
+                                           (xpar (lap 1.0 part1y)
+                                                 (xpar (lap 1.0 part1_size)
+                                                       (xpar (lap 1.0 part2x)
+                                                             (xpar (lap 1.0 part2y)
+                                                                   (xpar (lap 1.0 part2_size)
+                                                                         (xpar (lap 1.0 part3x)
+                                                                               (xpar (lap 1.0 part3y)
+                                                                                     (lap 1.0 part3_size)
+                                                                               )
+                                                                         )
+                                                                   )
+                                                             )
+                                                       )
+                                                 )
+                                           )
+          let p1x = xpfst noised_values
+              p1y = xpfst (xpsnd noised_values)
+              p1len = xpfst (xpsnd (xpsnd noised_values))
+              p2x = xpfst (xpsnd (xpsnd (xpsnd noised_values)))
+              p2y = xpfst (xpsnd (xpsnd (xpsnd (xpsnd noised_values))))
+              p2len = xpfst (xpsnd (xpsnd (xpsnd (xpsnd (xpsnd noised_values)))))
+              p3x = xpfst (xpsnd (xpsnd (xpsnd (xpsnd (xpsnd (xpsnd noised_values))))))
+              p3y = xpfst (xpsnd (xpsnd (xpsnd (xpsnd (xpsnd (xpsnd (xpsnd noised_values)))))))
+              p3len = xpsnd (xpsnd (xpsnd (xpsnd (xpsnd (xpsnd (xpsnd (xpsnd noised_values)))))))
+              c1 = xppair (p1x / p1len) (p1y / p1len)
+              c2 = xppair (p2x / p2len) (p2y / p2len)
+              c3 = xppair (p3x / p3len) (p3y / p3len)
+              cs = xppair (xppair c1 c2) c3
+          return cs
+
+kmeans_iter ::
+  CPSFuzz f Centroid3 ->
+  CPSFuzz f (Bag Point) ->
+  CPSFuzz f (Distr Centroid3)
+kmeans_iter cs db = kmeans_iter_k cs db return
+
+kmeans ::
+  CPSFuzz f (Bag Point) ->
+  CPSFuzz f (Distr Centroid3)
+kmeans db = do
+  kmeans_iter_k initialCentroids db $ \cs1 -> do
+    kmeans_iter_k cs1 db $ \cs2 -> do
+      kmeans_iter cs2 db
 
 -- #######################
 -- # FUNNY SYNTAX TRICKS #
