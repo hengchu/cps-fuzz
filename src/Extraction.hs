@@ -120,8 +120,6 @@ extractRZPrimF (PExpF (unK -> a)) = do
   return . K $ E (a ^. statements) (CallBuiltin "math.exp" [a ^. expr])
 extractRZPrimF (PSqrtF (unK -> a)) = do
   return . K $ E (a ^. statements) (CallBuiltin "math.sqrt" [a ^. expr])
-extractRZPrimF (PSqrtF (unK -> a)) = do
-  return . K $ E (a ^. statements) (CallBuiltin "math.sqrt" [a ^. expr])
 extractRZPrimF (PLogF (unK -> a)) = do
   return . K $ E (a ^. statements) (CallBuiltin "math.log" [a ^. expr])
 extractRZPrimF (PGTF (unK -> a) (unK -> b)) = do

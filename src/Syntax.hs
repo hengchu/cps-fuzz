@@ -12,7 +12,6 @@ import Control.Monad.State.Strict
 import Data.Constraint
 import Data.Functor.Compose
 import Data.Kind
-import Data.List (reverse)
 import Data.Proxy
 import qualified Data.Set as S
 import Debug.Trace
@@ -1975,6 +1974,11 @@ instance HInject ExprF (a :+: b :+: ExprF :+: h) where
   hproject' (Inr (Inr (Inl a))) = Just a
   hproject' _ = Nothing
 
+instance HInject ControlF (a :+: ControlF :+: h) where
+  hinject' = Inr . Inl
+  hproject' (Inr (Inl a)) = Just a
+  hproject' _ = Nothing
+
 instance HInject ControlF (a :+: b :+: ControlF :+: h) where
   hinject' = Inr . Inr . Inl
   hproject' (Inr (Inr (Inl a))) = Just a
@@ -2037,6 +2041,220 @@ instance HInject BmcsF (BmcsF :+: h) where
 -- not sure why this doesn't work
 --deriving via (DeriveHInjectTrans NRedZoneF MainF NMcsF) instance (HInject NRedZoneF NMcsF)
 
+-- #######################
+-- # More infrastructure #
+-- #######################
+
+newtype IsEq h a = IsEq { isEq :: HFix h a -> Bool }
+
+eqExprF :: HInject ExprF h => ExprF (IsEq h) a -> IsEq h a
+eqExprF (EVarF var) = IsEq $ \term ->
+  case hproject' @ExprF . unwrap $ term of
+    Just (EVarF var') -> var == var'
+    _ -> False
+eqExprF (ELamF var body) = IsEq $ \term ->
+  case hproject' . unwrap $ term of
+    Just (ELamF var' body') ->
+      var == var' && body `isEq` body'
+    _ -> False
+eqExprF (EAppF f (arg :: _ arg)) = IsEq $ \term ->
+  case hproject' . unwrap $ term of
+    Just (EAppF f' (arg' :: _ arg')) ->
+      case eqTypeRep (typeRep @arg) (typeRep @arg') of
+        Just HRefl ->
+          f `isEq` f' && arg `isEq` arg'
+        _ -> False
+    _ -> False
+eqExprF (ECompF g (f :: _ f)) = IsEq $ \term ->
+  case hproject' . unwrap $ term of
+    Just (ECompF g' (f' :: _ f')) ->
+      case eqTypeRep (typeRep @f) (typeRep @f') of
+        Just HRefl ->
+          g `isEq` g' && f `isEq` f'
+        _ -> False
+    _ -> False
+
+eqExprMonadF :: HInject ExprMonadF h => ExprMonadF (IsEq h) a -> IsEq h a
+eqExprMonadF (EParF a b) = IsEq $ \term ->
+  case hproject' . unwrap $ term of
+    Just (EParF a' b') -> a `isEq` a' && b `isEq` b'
+    _ -> False
+eqExprMonadF (ELaplaceF w c) = IsEq $ \term ->
+  case hproject' . unwrap $ term of
+    Just (ELaplaceF w' c') -> w == w' && c `isEq` c'
+    _ -> False
+eqExprMonadF (EReturnF a) = IsEq $ \term ->
+  case hproject' . unwrap $ term of
+    Just (EReturnF a') -> a `isEq` a'
+    _ -> False
+eqExprMonadF (EBindF (m :: _ m) var f) = IsEq $ \term ->
+  case hproject' . unwrap $ term of
+    Just (EBindF (m' :: _ m') var' f') ->
+      case eqTypeRep (typeRep @m) (typeRep @m') of
+        Just HRefl -> m `isEq` m' && var == var' && f `isEq` f'
+        _ -> False
+    _ -> False
+
+eqControlF :: HInject ControlF h => ControlF (IsEq h) a -> IsEq h a
+eqControlF (CIfF cond a b) = IsEq $ \term ->
+  case hproject' . unwrap $ term of
+    Just (CIfF cond' a' b') -> cond `isEq` cond' && a `isEq` a' && b `isEq` b'
+    _ -> False
+eqControlF (CLoopF acc pred iter) = IsEq $ \term ->
+  case hproject' . unwrap $ term of
+    Just (CLoopF acc' pred' iter') -> acc `isEq` acc' && pred `isEq` pred' && iter `isEq` iter'
+    _ -> False
+
+eqPrimF :: HInject PrimF h => PrimF (IsEq h) a -> IsEq h a
+eqPrimF (PLitF v) = IsEq $ \term ->
+  case hproject' . unwrap $ term of
+    Just (PLitF v') -> v == v'
+    _ -> False
+eqPrimF (PAddF a b) = IsEq $ \term ->
+  case hproject' . unwrap $ term of
+    Just (PAddF a' b') -> a `isEq` a' && b `isEq` b'
+    _ -> False
+eqPrimF (PSubF a b) = IsEq $ \term ->
+  case hproject' . unwrap $ term of
+    Just (PSubF a' b') -> a `isEq` a' && b `isEq` b'
+    _ -> False
+eqPrimF (PMultF a b) = IsEq $ \term ->
+  case hproject' . unwrap $ term of
+    Just (PMultF a' b') -> a `isEq` a' && b `isEq` b'
+    _ -> False
+eqPrimF (PDivF a b) = IsEq $ \term ->
+  case hproject' . unwrap $ term of
+    Just (PDivF a' b') -> a `isEq` a' && b `isEq` b'
+    _ -> False
+eqPrimF (PAbsF a) = IsEq $ \term ->
+  case hproject' . unwrap $ term of
+    Just (PAbsF a') -> a `isEq` a'
+    _ -> False
+eqPrimF (PSignumF a) = IsEq $ \term ->
+  case hproject' . unwrap $ term of
+    Just (PSignumF a') -> a `isEq` a'
+    _ -> False
+eqPrimF (PExpF a) = IsEq $ \term ->
+  case hproject' . unwrap $ term of
+    Just (PExpF a') -> a `isEq` a'
+    _ -> False
+eqPrimF (PSqrtF a) = IsEq $ \term ->
+  case hproject' . unwrap $ term of
+    Just (PSqrtF a') -> a `isEq` a'
+    _ -> False
+eqPrimF (PLogF a) = IsEq $ \term ->
+  case hproject' . unwrap $ term of
+    Just (PLogF a') -> a `isEq` a'
+    _ -> False
+eqPrimF (PGTF (a :: _ a) b) = IsEq $ \term ->
+  case hproject' . unwrap $ term of
+    Just (PGTF (a' :: _ a') b') ->
+      case eqTypeRep (typeRep @a) (typeRep @a') of
+        Just HRefl ->
+          a `isEq` a' && b `isEq` b'
+        _ -> False
+    _ -> False
+eqPrimF (PGEF (a :: _ a) b) = IsEq $ \term ->
+  case hproject' . unwrap $ term of
+    Just (PGEF (a' :: _ a') b') ->
+      case eqTypeRep (typeRep @a) (typeRep @a') of
+        Just HRefl ->
+          a `isEq` a' && b `isEq` b'
+        _ -> False
+    _ -> False
+eqPrimF (PLTF (a :: _ a) b) = IsEq $ \term ->
+  case hproject' . unwrap $ term of
+    Just (PLTF (a' :: _ a') b') ->
+      case eqTypeRep (typeRep @a) (typeRep @a') of
+        Just HRefl ->
+          a `isEq` a' && b `isEq` b'
+        _ -> False
+    _ -> False
+eqPrimF (PLEF (a :: _ a) b) = IsEq $ \term ->
+  case hproject' . unwrap $ term of
+    Just (PLEF (a' :: _ a') b') ->
+      case eqTypeRep (typeRep @a) (typeRep @a') of
+        Just HRefl ->
+          a `isEq` a' && b `isEq` b'
+        _ -> False
+    _ -> False
+eqPrimF (PEQF (a :: _ a) b) = IsEq $ \term ->
+  case hproject' . unwrap $ term of
+    Just (PEQF (a' :: _ a') b') ->
+      case eqTypeRep (typeRep @a) (typeRep @a') of
+        Just HRefl ->
+          a `isEq` a' && b `isEq` b'
+        _ -> False
+    _ -> False
+eqPrimF (PNEQF (a :: _ a) b) = IsEq $ \term ->
+  case hproject' . unwrap $ term of
+    Just (PNEQF (a' :: _ a') b') ->
+      case eqTypeRep (typeRep @a) (typeRep @a') of
+        Just HRefl ->
+          a `isEq` a' && b `isEq` b'
+        _ -> False
+    _ -> False
+eqPrimF (PAndF a b) = IsEq $ \term ->
+  case hproject' . unwrap $ term of
+    Just (PAndF a' b') -> a `isEq` a' && b `isEq` b'
+    _ -> False
+eqPrimF (POrF a b) = IsEq $ \term ->
+  case hproject' . unwrap $ term of
+    Just (POrF a' b') -> a `isEq` a' && b `isEq` b'
+    _ -> False
+eqPrimF (PJustF a) = IsEq $ \term ->
+  case hproject' . unwrap $ term of
+    Just (PJustF a') -> a `isEq` a'
+    _ -> False
+eqPrimF PNothingF = IsEq $ \term ->
+  case hproject' . unwrap $ term of
+    Just PNothingF -> True
+    _ -> False
+eqPrimF (PFromJustF a) = IsEq $ \term ->
+  case hproject' . unwrap $ term of
+    Just (PFromJustF a') -> a `isEq` a'
+    _ -> False
+eqPrimF (PIsJustF (a :: _ a)) = IsEq $ \term ->
+  case hproject' . unwrap $ term of
+    Just (PIsJustF (a' :: _ a')) ->
+      case eqTypeRep (typeRep @a) (typeRep @a') of
+        Just HRefl -> a `isEq` a'
+        _ -> False
+    _ -> False
+eqPrimF (PPairF a b) = IsEq $ \term ->
+  case hproject' . unwrap $ term of
+    Just (PPairF a' b') -> a `isEq` a' && b `isEq` b'
+    _ -> False
+eqPrimF (PFstF (a :: _ a)) = IsEq $ \term ->
+  case hproject' . unwrap $ term of
+    Just (PFstF (a' :: _ a')) ->
+      case eqTypeRep (typeRep @a) (typeRep @a') of
+        Just HRefl -> a `isEq` a'
+        _ -> False
+    _ -> False
+eqPrimF (PSndF (a :: _ a)) = IsEq $ \term ->
+  case hproject' . unwrap $ term of
+    Just (PSndF (a' :: _ a')) ->
+      case eqTypeRep (typeRep @a) (typeRep @a') of
+        Just HRefl -> a `isEq` a'
+        _ -> False
+    _ -> False
+
+eqNRedZoneF ::
+  (HInject ExprF h,
+   HInject ControlF h,
+   HInject PrimF h) => NRedZoneF (IsEq h) a -> IsEq h a
+eqNRedZoneF = eqExprF `sumAlg` eqControlF `sumAlg` eqPrimF
+
+eqNRedZone ::
+  (HInject ExprF h,
+   HInject ControlF h,
+   HInject PrimF h) => HFix NRedZoneF a -> IsEq h a
+eqNRedZone = hcata' eqNRedZoneF
+
+instance Eq (HFix NRedZoneF a) where
+  term == term' = (eqNRedZone term) `isEq` term'
+
 data Literal =
   I Int
   | D Double
@@ -2044,7 +2262,7 @@ data Literal =
   | U
   deriving (Show, Eq, Ord)
 
-class IsLiteral a where
+class Eq a => IsLiteral a where
   toLiteral :: a -> Literal
 
 instance IsLiteral Int where

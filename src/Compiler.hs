@@ -31,6 +31,12 @@ data AnyEdge where
 data AnyRedZone :: * where
   AnyRedZone :: Typeable r => HFix NRedZoneF r -> AnyRedZone
 
+instance Eq AnyRedZone where
+  AnyRedZone (term :: _ r1) == AnyRedZone (term' :: _ r2) =
+    case eqTypeRep (typeRep @r1) (typeRep @r2) of
+      Just HRefl -> term == term'
+      _ -> False
+
 type Direction = (UniqueName, UniqueName)
 
 data EffectGraph
@@ -743,15 +749,44 @@ inflateExprMonadF g db term@(EParF a b) =
                     mfInputName <- gfresh "par_map_input"
                     let mfInputVar = Var @arow mfInputName
                     let mfInputTerm = wrap . hinject' $ EVarF mfInputVar
-                    let mf = wrap . hinject' $ ELamF mfInputVar (pair (aMf %@ mfInputTerm) (bMf %@ mfInputTerm))
+                    let mf = wrap . hinject' $
+                          ELamF mfInputVar (pair (aMf %@ mfInputTerm) (bMf %@ mfInputTerm))
                     rfInputName <- gfresh "par_release_input"
                     let rfInputVar = Var @(asum, bsum) rfInputName
                     let rfInputTerm = wrap . hinject' $ EVarF rfInputVar
-                    let rf = wrap . hinject' $ ELamF rfInputVar $ par (aRf %@ pfst rfInputTerm) (bRf %@ psnd rfInputTerm)
-                    return
-                      ( a'secLvl `joinSecLvl` b'secLvl,
-                        wrap . hinject' $ MRunF reprSize clipBound mf rf
-                      )
+                    let rf = wrap . hinject' $
+                          ELamF rfInputVar $ par (aRf %@ pfst rfInputTerm) (bRf %@ psnd rfInputTerm)
+                    let naiveParFusionTerm = wrap . hinject' $ MRunF reprSize clipBound mf rf
+                    case eqTypeRep (typeRep @asum) (typeRep @bsum) of
+                      Nothing ->
+                        return
+                          ( a'secLvl `joinSecLvl` b'secLvl,
+                            naiveParFusionTerm
+                          )
+                      Just HRefl -> do
+                        case (project' @NRedZoneF aMf,
+                              project' @NRedZoneF bMf) of
+                          (Just aMf, Just bMf) ->
+                            case aMf == bMf of
+                              False -> do
+                                return
+                                  ( a'secLvl `joinSecLvl` b'secLvl,
+                                    naiveParFusionTerm
+                                  )
+                              True -> do
+                                -- map functions are identical, we can reduce fused term size
+                                let reprSize = aReprSize
+                                let clipBound = aClipBound
+                                let mf = aMf
+                                rfInputName <- gfresh "par_release_input"
+                                let rfInputVar = Var @asum rfInputName
+                                let rfInputTerm = wrap . hinject' $ EVarF rfInputVar
+                                let rf = wrap . hinject' $
+                                      ELamF rfInputVar $ par (aRf %@ rfInputTerm) (bRf %@ rfInputTerm)
+                                return (a'secLvl `joinSecLvl` b'secLvl,
+                                        wrap . hinject' $ MRunF reprSize clipBound (inject' mf) rf)
+                          _ -> throwM' . InternalError $
+                            printf "inflateExprMonadF: map functions must be red zone code"
               (Nothing, _) ->
                 throwM' $ InvalidParArgument (pMain $ a ^. original)
               (_, Nothing) ->
