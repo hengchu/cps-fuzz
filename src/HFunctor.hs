@@ -1,5 +1,7 @@
 module HFunctor where
 
+import GHC.Generics(Generic)
+
 newtype K a b = K a
   deriving (Show, Eq, Ord, Functor)
 
@@ -32,6 +34,7 @@ data
     :+: (g :: (* -> *) -> * -> *) :: (* -> *) -> * -> * where
   Inl :: f r a -> (f :+: g) r a
   Inr :: g r a -> (f :+: g) r a
+  deriving (Generic)
 
 data
   (f :: (* -> *) -> * -> *)

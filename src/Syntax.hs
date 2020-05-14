@@ -22,6 +22,8 @@ import qualified Language.Haskell.TH as TH
 import Names
 import Text.Printf
 import Type.Reflection
+import Data.Bits
+import Data.Hashable
 
 class VecStorable a where
   -- | How many dimensions does it take to store `a`?
@@ -79,13 +81,18 @@ instance Monad (Mon f m) where
 newtype Bag a = Bag [a]
   deriving (Show, Eq, Ord)
   deriving (Functor, Applicative, Monad, Foldable) via []
+  deriving Hashable via [a]
 
 newtype Vec a = Vec [a]
   deriving (Show, Eq, Ord)
   deriving (Functor, Applicative, Monad, Foldable) via []
+  deriving Hashable via [a]
 
 data Var (a :: *) where
   Var :: Typeable a => UniqueName -> Var a
+
+instance Hashable (Var a) where
+  hashWithSalt salt (Var name) = salt `hashWithSalt` (typeRep @a) `hashWithSalt` name
 
 data AnyVar where
   AnyVar :: Typeable a => Var a -> AnyVar
@@ -97,6 +104,9 @@ deriving instance Eq (Var a)
 deriving instance Ord (Var a)
 
 deriving instance Show AnyVar
+
+instance Hashable AnyVar where
+  hashWithSalt salt (AnyVar v) = hashWithSalt salt v
 
 instance Eq AnyVar where
   (AnyVar (v :: _ a)) == (AnyVar (u :: _ b)) =
@@ -2255,6 +2265,153 @@ eqNRedZone = hcata' eqNRedZoneF
 instance Eq (HFix NRedZoneF a) where
   term == term' = (eqNRedZone term) `isEq` term'
 
+newtype Hash a = Hash { hashWithSalt_ :: Int -> Int }
+
+infixl 0 `hashWithSaltImpl`
+
+hashWithSaltImpl :: Int -> Hash a -> Int
+hashWithSaltImpl = flip hashWithSalt_
+
+-- | Stolen from `Data.Hashable.Class`.
+combineHash :: Int -> Int -> Int
+combineHash h1 h2 = (h1 * 16777619) `xor` h2
+
+hashExprMonadF :: ExprMonadF Hash a -> Hash a
+hashExprMonadF (EParF a b) = Hash $ \salt ->
+  0 `hashWithSalt` salt `hashWithSaltImpl` a `hashWithSaltImpl` b
+hashExprMonadF (ELaplaceF w c) = Hash $ \salt ->
+  1 `hashWithSalt` salt `hashWithSalt` w `hashWithSaltImpl` c
+hashExprMonadF (EReturnF a) = Hash $ \salt ->
+  2 `hashWithSalt` salt `hashWithSaltImpl` a
+hashExprMonadF (EBindF m v f) = Hash $ \salt ->
+  3 `hashWithSalt` salt `hashWithSaltImpl` m `hashWithSalt` v `hashWithSaltImpl` f
+
+instance Hashable (ExprMonadF Hash a) where
+  hashWithSalt salt =
+    hashWithSaltImpl salt . hashExprMonadF
+
+hashExprF :: ExprF Hash a -> Hash a
+hashExprF (EVarF v) = Hash $ \salt ->
+  0 `hashWithSalt` hashWithSalt salt v
+hashExprF (ELamF v body) = Hash $ \salt ->
+  1 `hashWithSalt` salt `hashWithSalt` v `hashWithSaltImpl` body
+hashExprF (EAppF f arg) = Hash $ \salt ->
+  2 `hashWithSalt` salt `hashWithSaltImpl` f `hashWithSaltImpl` arg
+hashExprF (ECompF g f) = Hash $ \salt ->
+  3 `hashWithSalt` salt `hashWithSaltImpl` g `hashWithSaltImpl` f
+
+instance Hashable (ExprF Hash a) where
+  hashWithSalt salt =
+    hashWithSaltImpl salt . hashExprF
+
+hashControlF :: ControlF Hash a -> Hash a
+hashControlF (CIfF cond a b) = Hash $ \salt ->
+  0 `hashWithSalt` salt `hashWithSaltImpl` cond `hashWithSaltImpl` a `hashWithSaltImpl` b
+hashControlF (CLoopF acc pred iter) = Hash $ \salt ->
+  1 `hashWithSalt` salt `hashWithSaltImpl` acc `hashWithSaltImpl` pred `hashWithSaltImpl` iter
+
+instance Hashable (ControlF Hash a) where
+  hashWithSalt salt =
+    hashWithSaltImpl salt . hashControlF
+
+hashPrimF :: PrimF Hash a -> Hash a
+hashPrimF (PLitF v) = Hash $ \salt ->
+  0 `hashWithSalt` salt `hashWithSalt` v
+hashPrimF (PAddF a b) = Hash $ \salt ->
+  1 `hashWithSalt` salt `hashWithSaltImpl` a `hashWithSaltImpl` b
+hashPrimF (PSubF a b) = Hash $ \salt ->
+  2 `hashWithSalt` salt `hashWithSaltImpl` a `hashWithSaltImpl` b
+hashPrimF (PMultF a b) = Hash $ \salt ->
+  3 `hashWithSalt` salt `hashWithSaltImpl` a `hashWithSaltImpl` b
+hashPrimF (PDivF a b) = Hash $ \salt ->
+  4 `hashWithSalt` salt `hashWithSaltImpl` a `hashWithSaltImpl` b
+hashPrimF (PAbsF a) = Hash $ \salt ->
+  5 `hashWithSalt` salt `hashWithSaltImpl` a
+hashPrimF (PSignumF a) = Hash $ \salt ->
+  6 `hashWithSalt` salt `hashWithSaltImpl` a
+hashPrimF (PExpF a) = Hash $ \salt ->
+  7 `hashWithSalt` salt `hashWithSaltImpl` a
+hashPrimF (PSqrtF a) = Hash $ \salt ->
+  8 `hashWithSalt` salt `hashWithSaltImpl` a
+hashPrimF (PLogF a) = Hash $ \salt ->
+  9 `hashWithSalt` salt `hashWithSaltImpl` a
+hashPrimF (PGTF a b) = Hash $ \salt ->
+  10 `hashWithSalt` salt `hashWithSaltImpl` a `hashWithSaltImpl` b
+hashPrimF (PGEF a b) = Hash $ \salt ->
+  11 `hashWithSalt` salt `hashWithSaltImpl` a `hashWithSaltImpl` b
+hashPrimF (PLTF a b) = Hash $ \salt ->
+  12 `hashWithSalt` salt `hashWithSaltImpl` a `hashWithSaltImpl` b
+hashPrimF (PLEF a b) = Hash $ \salt ->
+  13 `hashWithSalt` salt `hashWithSaltImpl` a `hashWithSaltImpl` b
+hashPrimF (PEQF a b) = Hash $ \salt ->
+  14 `hashWithSalt` salt `hashWithSaltImpl` a `hashWithSaltImpl` b
+hashPrimF (PNEQF a b) = Hash $ \salt ->
+  15 `hashWithSalt` salt `hashWithSaltImpl` a `hashWithSaltImpl` b
+hashPrimF (PAndF a b) = Hash $ \salt ->
+  16 `hashWithSalt` salt `hashWithSaltImpl` a `hashWithSaltImpl` b
+hashPrimF (POrF a b) = Hash $ \salt ->
+  17 `hashWithSalt` salt `hashWithSaltImpl` a `hashWithSaltImpl` b
+hashPrimF (PJustF a) = Hash $ \salt ->
+  18 `hashWithSalt` salt `hashWithSaltImpl` a
+hashPrimF PNothingF = Hash $ \salt ->
+  19 `hashWithSalt` salt
+hashPrimF (PFromJustF a) = Hash $ \salt ->
+  20 `hashWithSalt` salt `hashWithSaltImpl` a
+hashPrimF (PIsJustF a) = Hash $ \salt ->
+  21 `hashWithSalt` salt `hashWithSaltImpl` a
+hashPrimF (PPairF a b) = Hash $ \salt ->
+  22 `hashWithSalt` salt `hashWithSaltImpl` a `hashWithSaltImpl` b
+hashPrimF (PFstF a) = Hash $ \salt ->
+  23 `hashWithSalt` salt `hashWithSaltImpl` a
+hashPrimF (PSndF a) = Hash $ \salt ->
+  24 `hashWithSalt` salt `hashWithSaltImpl` a
+
+instance Hashable (PrimF Hash a) where
+  hashWithSalt salt =
+    hashWithSaltImpl salt . hashPrimF
+
+hashMcsF :: McsF Hash a -> Hash a
+hashMcsF (MRunF sz clip mf rf) = Hash $ \salt ->
+  0 `hashWithSalt` salt
+  `hashWithSalt` sz
+  `hashWithSalt` clip
+  `hashWithSaltImpl` mf
+  `hashWithSaltImpl` rf
+
+instance Hashable (McsF Hash a) where
+  hashWithSalt salt =
+    hashWithSaltImpl salt . hashMcsF
+
+hashBmcsF :: BmcsF Hash a -> Hash a
+hashBmcsF (BRunF sz clip mst mf rst rf) = Hash $ \salt ->
+  0 `hashWithSalt` salt
+  `hashWithSalt` sz
+  `hashWithSalt` clip
+  `hashWithSaltImpl` mst
+  `hashWithSaltImpl` mf
+  `hashWithSaltImpl` rst
+  `hashWithSaltImpl` rf
+
+instance Hashable (BmcsF Hash a) where
+  hashWithSalt salt =
+    hashWithSaltImpl salt . hashBmcsF
+
+hashBagOpF :: BagOpF Hash a -> Hash a
+hashBagOpF (BMapF mf db kont) = Hash $ \salt ->
+  0 `hashWithSalt` salt `hashWithSaltImpl` mf `hashWithSaltImpl` db `hashWithSaltImpl` kont
+hashBagOpF (BSumF clip db kont) = Hash $ \salt ->
+  1 `hashWithSalt` salt `hashWithSalt` clip `hashWithSaltImpl` db `hashWithSaltImpl` kont
+
+instance Hashable (BagOpF Hash a) where
+  hashWithSalt salt =
+    hashWithSaltImpl salt . hashBagOpF
+
+instance (Hashable (f Hash a), Hashable (g Hash a)) => Hashable ((f :+: g) Hash a)
+
+instance (HFunctor h, forall a. Hashable (h Hash a)) => Hashable (HFix h a) where
+  hashWithSalt salt term = hashWithSaltImpl salt (hcata' hashAlg term)
+    where hashAlg term = Hash (flip hashWithSalt term)
+
 data Literal =
   I Int
   | D Double
@@ -2262,7 +2419,7 @@ data Literal =
   | U
   deriving (Show, Eq, Ord)
 
-class Eq a => IsLiteral a where
+class (Hashable a, Eq a) => IsLiteral a where
   toLiteral :: a -> Literal
 
 instance IsLiteral Int where

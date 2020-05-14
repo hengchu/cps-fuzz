@@ -6,6 +6,8 @@ import Data.Foldable
 import qualified Data.Map.Strict as M
 import Data.Semigroup
 import Text.Printf
+import Data.Hashable
+import GHC.Generics
 
 type NameMap = M.Map String Int
 
@@ -14,7 +16,9 @@ data UniqueName
       { _nBase :: String,
         _nTrailing :: Int
       }
-  deriving (Eq, Ord)
+  deriving (Eq, Ord, Generic)
+
+instance Hashable UniqueName
 
 instance Show UniqueName where
   show (UniqueName b t) = printf "%s_%d_" b t

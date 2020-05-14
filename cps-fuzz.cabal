@@ -99,6 +99,7 @@ library
               , template-haskell >= 2.15.0.0 && < 2.16
               , exceptions >= 0.10.4 && < 0.11
               , constraints >= 0.11 && < 0.13
+              , hashable >= 1.3.0.0 && < 1.4
   default-language: Haskell2010
 
 executable cps-fuzz-exe
