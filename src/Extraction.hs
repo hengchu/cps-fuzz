@@ -1,3 +1,5 @@
+{-# LANGUAGE AllowAmbiguousTypes #-}
+
 module Extraction where
 
 import HFunctor
@@ -5,6 +7,9 @@ import Syntax as Syn
 import Control.Lens
 import Names
 import Control.Monad.Catch
+import Type.Reflection
+import Data.Constraint
+import Text.Printf
 
 data Bop = Add  | Mult
          | Sub  | Div
@@ -26,6 +31,7 @@ data Exp = Binary Exp Bop Exp
          | Slice Exp (Maybe Exp) (Maybe Exp)
          | Unary Uop Exp
          | Call Exp [Exp]
+         | DotCall Exp String [Exp]
          | CallBuiltin String [Exp]
          | Var UniqueName
          | Val Literal
@@ -58,47 +64,178 @@ data Extraction = E {
 
 makeLensesWith abbreviatedFields ''Extraction
 
+data ExtractionError = InternalError String
+  deriving (Show, Eq, Ord)
+
+instance Exception ExtractionError
+
+data Zone = Orange | Other
+
+newtype ExtractionFun m a =
+  ExtractionFun { runExtraction :: Zone -> m Extraction }
+
+class DefaultMamba ty where
+  defaultMamba :: Exp
+
+instance DefaultMamba Int where
+  defaultMamba = CallBuiltin "cint" [Val (I 0)]
+
+instance DefaultMamba Number where
+  defaultMamba = CallBuiltin "cfloat" [Val (D 0)]
+
+instance DefaultMamba Bool where
+  defaultMamba = CallBuiltin "cint" [Val (I 0)]
+
+instance (DefaultMamba a, DefaultMamba b) => DefaultMamba (a, b) where
+  defaultMamba = Tuple [defaultMamba @a, defaultMamba @b]
+
+instance DefaultMamba a => DefaultMamba (Distr a) where
+  defaultMamba = defaultMamba @a
+
+resolveDefaultMamba :: forall a. Typeable a => Maybe (Dict (DefaultMamba a))
+resolveDefaultMamba =
+  case eqTypeRep (typeRep @a) (typeRep @Int) of
+    Just HRefl -> return Dict
+    _ -> case eqTypeRep (typeRep @a) (typeRep @Number) of
+      Just HRefl -> return Dict
+      _ -> case eqTypeRep (typeRep @a) (typeRep @Bool) of
+             Just HRefl -> return Dict
+             _ -> case typeRep @a of
+                    App tyCon (b :: _ b) ->
+                      case tyCon of
+                        App (comma :: _ comma) (a1 :: _ a1) ->
+                          case eqTypeRep comma (typeRep @(,)) of
+                            Just HRefl -> do
+                              d1 <- withTypeable a1 $ resolveDefaultMamba @a1
+                              d2 <- withTypeable b  $ resolveDefaultMamba @b
+                              withDict d1 $
+                                withDict d2 $
+                                return Dict
+                            _ -> Nothing
+                        _ -> Nothing
+                    _ -> Nothing
+
 extractExprF ::
   (MonadThrowWithStack m, FreshM m) =>
-  ExprF (K Extraction) a ->
-  m (K Extraction a)
-extractExprF (EVarF (Syn.Var bound)) = return . K $
+  ExprF (ExtractionFun m) a ->
+  ExtractionFun m a
+extractExprF (EVarF (Syn.Var bound)) = ExtractionFun . const . return $
   E [] $ Extraction.Var bound
-extractExprF (ELamF (Syn.Var bound) (unK -> body)) = do
+extractExprF (ELamF (Syn.Var bound) (runExtraction -> body)) = ExtractionFun $ \zone -> do
   funName <- gfresh "anonymous_fun"
-  let fDecl = FuncDecl funName [bound] (body ^. statements ++ [Ret $ body ^. expr])
-  return . K $ E [Decl fDecl] $ Extraction.Var funName
-extractExprF (EAppF (unK -> f) (unK -> arg)) = do
-  return . K $ E (f ^. statements ++ arg ^. statements) (Call (f ^. expr) [arg ^. expr])
-extractExprF (ECompF (unK -> g) (unK -> f)) = do
-  return . K $
-    E (g ^. statements ++ f ^. statements)
-      (CallBuiltin "fun_comp" [g ^. expr, f ^. expr])
+  bodyExtr <- body zone
+  let fDecl = FuncDecl funName [bound] (bodyExtr ^. statements ++ [Ret $ bodyExtr ^. expr])
+  return $ E [Decl fDecl] $ Extraction.Var funName
+extractExprF (EAppF (runExtraction -> f) (runExtraction -> arg)) = ExtractionFun $ \zone -> do
+  fExtr <- f zone
+  argExtr <- arg zone
+  return $ E (fExtr ^. statements ++ argExtr ^. statements) (Call (fExtr ^. expr) [argExtr ^. expr])
+extractExprF (ECompF (runExtraction -> g) (runExtraction -> f)) = ExtractionFun $ \zone -> do
+  gExtr <- g zone
+  fExtr <- f zone
+  return $
+    E (gExtr ^. statements ++ fExtr ^. statements)
+      (CallBuiltin "fun_comp" [gExtr ^. expr, fExtr ^. expr])
 
-extractRZControlF ::
+defaultMambaExpr :: forall a m. (Typeable a, MonadThrowWithStack m) => m Exp
+defaultMambaExpr =
+  case resolveDefaultMamba @a of
+    Just d -> withDict d $ return (defaultMamba @a)
+    Nothing -> throwM' . InternalError $ printf "expected DefaultMamba for type %s" (show $ typeRep @a)
+
+extractControlF ::
   (MonadThrowWithStack m, FreshM m) =>
-  ControlF (K Extraction) a ->
-  m (K Extraction a)
-extractRZControlF (CIfF (unK -> cond) (unK -> a) (unK -> b)) = do
-  condResultName <- gfresh "cond_result"
-  let stmts = cond ^. statements
-              ++ [Cond (cond ^. expr)
-                       (a ^. statements ++ [Assign condResultName (a ^. expr)])
-                       (b ^. statements ++ [Assign condResultName (b ^. expr)])]
-  return . K $
-    E stmts (Extraction.Var condResultName)
-extractRZControlF (CLoopF (unK -> acc) (unK -> pred) (unK -> iter)) = do
-  accResultName <- gfresh "loop_acc"
-  let condExpr = Call (pred ^. expr) [Extraction.Var accResultName]
-  let iterExpr = Call (iter ^. expr) [Extraction.Var accResultName]
-  let stmts = acc ^. statements
-              ++ pred ^. statements
-              ++ iter ^. statements
-              ++ [Assign accResultName (acc ^. expr)]
-              ++ [While condExpr [Assign accResultName iterExpr]]
-  return . K $
-    E stmts (Extraction.Var accResultName)
+  ControlF (ExtractionFun m) a ->
+  ExtractionFun m a
+extractControlF (CIfF (runExtraction -> cond) ((runExtraction -> a) :: _ r) (runExtraction -> b)) =
+  ExtractionFun $ \zone ->
+  case zone of
+    Other -> do
+      condResultName <- gfresh "cond_result"
+      condExtr <- cond Other
+      aExtr <- a Other
+      bExtr <- b Other
+      let stmts = condExtr ^. statements
+                  ++ [Cond (condExtr ^. expr)
+                           (aExtr ^. statements ++ [Assign condResultName (aExtr ^. expr)])
+                           (bExtr ^. statements ++ [Assign condResultName (bExtr ^. expr)])]
+      return $
+        E stmts (Extraction.Var condResultName)
+    Orange -> do
+      condResultName <- gfresh "cond_result"
+      initializeCondResultStmt <-
+        (\defExp -> return $ Assign condResultName $
+          CallBuiltin "MemValue" [defExp]) =<< defaultMambaExpr @r
+      condExtr <- cond Orange
+      aExtr <- a Orange
+      bExtr <- b Orange
+      trueBranchName <- gfresh "if_true"
+      falseBranchName <- gfresh "if_false"
+      let trueFun =
+            FuncDecl trueBranchName [] $
+            aExtr ^. statements ++
+            [ExpStmt $ DotCall (Extraction.Var condResultName) "write" [aExtr ^. expr]]
+      let falseFun =
+            FuncDecl trueBranchName [] $
+            bExtr ^. statements ++
+            [ExpStmt $ DotCall (Extraction.Var condResultName) "write" [bExtr ^. expr]]
+      let stmts = condExtr ^. statements
+                  ++ aExtr ^. statements
+                  ++ bExtr ^. statements
+                  ++ [initializeCondResultStmt,
+                      Decl trueFun,
+                      Decl falseFun,
+                      ExpStmt $ CallBuiltin "if_statement" $
+                        [condExtr ^. expr, Extraction.Var trueBranchName, Extraction.Var falseBranchName],
+                      Assign condResultName (DotCall (Extraction.Var condResultName) "read" [])
+                     ]
+      return $ E stmts (Extraction.Var condResultName)
+extractControlF (CLoopF ((runExtraction -> acc) :: _ acc) (runExtraction -> pred) (runExtraction -> iter)) =
+  ExtractionFun $ \zone ->
+  case zone of
+    Other -> do
+      accResultName <- gfresh "loop_acc"
+      accExtr  <- acc  Other
+      predExtr <- pred Other
+      iterExtr <- iter Other
+      let condExpr = Call (predExtr ^. expr) [Extraction.Var accResultName]
+      let iterExpr = Call (iterExtr ^. expr) [Extraction.Var accResultName]
+      let stmts = accExtr ^. statements
+                  ++ predExtr ^. statements
+                  ++ iterExtr ^. statements
+                  ++ [Assign accResultName (accExtr ^. expr)]
+                  ++ [While condExpr [Assign accResultName iterExpr]]
+      return $
+        E stmts (Extraction.Var accResultName)
+    Orange -> do
+      loopResultName <- gfresh "loop_acc"
+      accExtr  <- acc Orange
+      predExtr <- pred Orange
+      iterExtr <- iter Orange
+      let initializeAccStmt =
+            Assign loopResultName $
+            CallBuiltin "MemValue" [accExtr ^. expr]
+      loopBodyName <- gfresh "loop_body"
+      let loopResultExpr = Extraction.Var loopResultName
+      let iterFun =
+            FuncDecl loopBodyName [loopResultName] $
+            [ExpStmt $ DotCall loopResultExpr "write" [Call (iterExtr ^. expr) [loopResultExpr]]]
+      let stmts = accExtr ^. statements
+                  ++ predExtr ^. statements
+                  ++ iterExtr ^. statements
+                  ++ [initializeAccStmt,
+                      Decl iterFun,
+                      ExpStmt $
+                       CallBuiltin "while_loop" $
+                       [Extraction.Var loopBodyName, -- loop body function
+                        predExtr ^. expr, -- loop condition function
+                        loopResultExpr], -- initial loop accumulator value
+                      Assign loopResultName (DotCall loopResultExpr "read" [])
+                     ]
+      return $
+        E stmts (Extraction.Var loopResultName)
 
+{-
 extractRZPrimF ::
   (MonadThrowWithStack m, FreshM m) =>
   PrimF (K Extraction) a ->
@@ -152,3 +289,4 @@ extractRZPrimF (PFstF (unK -> p)) = do
   return . K $ E (p ^. statements) (Index (p ^. expr) (Val (I 0)))
 extractRZPrimF (PSndF (unK -> p)) = do
   return . K $ E (p ^. statements) (Index (p ^. expr) (Val (I 1)))
+-}
