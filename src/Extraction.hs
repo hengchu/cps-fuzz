@@ -8,17 +8,18 @@ import Control.Lens
 import Names
 import Control.Monad.Catch
 import Type.Reflection
-import Data.Constraint
+import Data.Constraint (withDict, Dict(..))
 import Text.Printf
 
-data Bop = Add  | Mult
-         | Sub  | Div
+data Bop = Add   | Mult
+         | Sub   | Div
          | Pow
-         | IDiv | IMod
-         | Lt   | Le | Gt | Ge
-         | Eq_  | Neq
-         | Conj | Disj
-         | Is | IsNot
+         | IDiv  | IMod
+         | Lt    | Le | Gt | Ge
+         | Eq_   | Neq
+         | Conj  | Disj
+         | BConj | BDisj
+         | Is    | IsNot
   deriving (Show, Eq, Ord)
 
 data Uop = BNot
@@ -81,7 +82,7 @@ instance DefaultMamba Int where
   defaultMamba = CallBuiltin "cint" [Val (I 0)]
 
 instance DefaultMamba Number where
-  defaultMamba = CallBuiltin "cfloat" [Val (D 0)]
+  defaultMamba = CallBuiltin "cfix" [Val (D 0)]
 
 instance DefaultMamba Bool where
   defaultMamba = CallBuiltin "cint" [Val (I 0)]
@@ -91,6 +92,12 @@ instance (DefaultMamba a, DefaultMamba b) => DefaultMamba (a, b) where
 
 instance DefaultMamba a => DefaultMamba (Distr a) where
   defaultMamba = defaultMamba @a
+
+lit2Mamba ::  Literal -> Exp
+lit2Mamba lit@(I _) = CallBuiltin "cint" [Val lit]
+lit2Mamba lit@(D _) = CallBuiltin "cfix" [Val lit]
+lit2Mamba (P (a, b)) = Tuple [lit2Mamba a, lit2Mamba b]
+lit2Mamba U = Tuple []
 
 resolveDefaultMamba :: forall a. Typeable a => Maybe (Dict (DefaultMamba a))
 resolveDefaultMamba =
@@ -235,58 +242,157 @@ extractControlF (CLoopF ((runExtraction -> acc) :: _ acc) (runExtraction -> pred
       return $
         E stmts (Extraction.Var loopResultName)
 
-{-
-extractRZPrimF ::
+naturalBase :: Exp
+naturalBase = Val (D (Prelude.exp 1))
+
+extractPrimF :: forall a m.
   (MonadThrowWithStack m, FreshM m) =>
-  PrimF (K Extraction) a ->
-  m (K Extraction a)
-extractRZPrimF (PLitF v) = return . K $ E [] (Val . toLiteral $ v)
-extractRZPrimF (PAddF (unK -> a) (unK -> b)) = do
-  return . K $ E (a ^. statements ++ b ^. statements) (Binary (a ^. expr) Add (b ^. expr))
-extractRZPrimF (PSubF (unK -> a) (unK -> b)) = do
-  return . K $ E (a ^. statements ++ b ^. statements) (Binary (a ^. expr) Sub (b ^. expr))
-extractRZPrimF (PMultF (unK -> a) (unK -> b)) = do
-  return . K $ E (a ^. statements ++ b ^. statements) (Binary (a ^. expr) Mult (b ^. expr))
-extractRZPrimF (PDivF (unK -> a) (unK -> b)) = do
-  return . K $ E (a ^. statements ++ b ^. statements) (Binary (a ^. expr) Div (b ^. expr))
-extractRZPrimF (PAbsF (unK -> a)) = do
-  return . K $ E (a ^. statements) (CallBuiltin "abs" [a ^. expr])
-extractRZPrimF (PSignumF (unK -> a)) = do
-  return . K $ E (a ^. statements) (CallBuiltin "signum" [a ^. expr])
-extractRZPrimF (PExpF (unK -> a)) = do
-  return . K $ E (a ^. statements) (CallBuiltin "math.exp" [a ^. expr])
-extractRZPrimF (PSqrtF (unK -> a)) = do
-  return . K $ E (a ^. statements) (CallBuiltin "math.sqrt" [a ^. expr])
-extractRZPrimF (PLogF (unK -> a)) = do
-  return . K $ E (a ^. statements) (CallBuiltin "math.log" [a ^. expr])
-extractRZPrimF (PGTF (unK -> a) (unK -> b)) = do
-  return . K $ E (a ^. statements) (Binary (a ^. expr) Gt (b ^. expr))
-extractRZPrimF (PGEF (unK -> a) (unK -> b)) = do
-  return . K $ E (a ^. statements) (Binary (a ^. expr) Ge (b ^. expr))
-extractRZPrimF (PLTF (unK -> a) (unK -> b)) = do
-  return . K $ E (a ^. statements) (Binary (a ^. expr) Lt (b ^. expr))
-extractRZPrimF (PLEF (unK -> a) (unK -> b)) = do
-  return . K $ E (a ^. statements) (Binary (a ^. expr) Le (b ^. expr))
-extractRZPrimF (PEQF (unK -> a) (unK -> b)) = do
-  return . K $ E (a ^. statements) (Binary (a ^. expr) Eq_ (b ^. expr))
-extractRZPrimF (PNEQF (unK -> a) (unK -> b)) = do
-  return . K $ E (a ^. statements) (Binary (a ^. expr) Neq (b ^. expr))
-extractRZPrimF (PAndF (unK -> a) (unK -> b)) = do
-  return . K $ E (a ^. statements) (Binary (a ^. expr) Conj (b ^. expr))
-extractRZPrimF (POrF (unK -> a) (unK -> b)) = do
-  return . K $ E (a ^. statements) (Binary (a ^. expr) Disj (b ^. expr))
-extractRZPrimF (PJustF (unK -> a)) = do
-  return . K $ E (a ^. statements) (a ^. expr)
-extractRZPrimF PNothingF = do
-  return . K $ E [] None
-extractRZPrimF (PFromJustF (unK -> a)) = do
-  return . K $ E (a ^. statements) (a ^. expr)
-extractRZPrimF (PIsJustF (unK -> a)) = do
-  return . K $ E (a ^. statements) (Binary (a ^. expr) IsNot None)
-extractRZPrimF (PPairF (unK -> a) (unK -> b)) = do
-  return . K $ E (a ^. statements ++ b ^. statements) (Tuple [a^.expr, b^.expr])
-extractRZPrimF (PFstF (unK -> p)) = do
-  return . K $ E (p ^. statements) (Index (p ^. expr) (Val (I 0)))
-extractRZPrimF (PSndF (unK -> p)) = do
-  return . K $ E (p ^. statements) (Index (p ^. expr) (Val (I 1)))
--}
+  PrimF (ExtractionFun m) a ->
+  ExtractionFun m a
+extractPrimF (PLitF v) = ExtractionFun $ \zone ->
+  case zone of
+    Other  -> return $ E [] (Val . toLiteral $ v)
+    Orange -> return $ E [] (lit2Mamba . toLiteral $ v)
+extractPrimF (PAddF (runExtraction -> a) (runExtraction -> b)) = ExtractionFun $ \zone -> do
+  aExtr <- a zone
+  bExtr <- b zone
+  return $ E (aExtr ^. statements ++ bExtr ^. statements) (Binary (aExtr ^. expr) Add (bExtr ^. expr))
+extractPrimF (PSubF (runExtraction -> a) (runExtraction -> b)) = ExtractionFun $ \zone -> do
+  aExtr <- a zone
+  bExtr <- b zone
+  return $ E (aExtr ^. statements ++ bExtr ^. statements) (Binary (aExtr ^. expr) Sub (bExtr ^. expr))
+extractPrimF (PMultF (runExtraction -> a) (runExtraction -> b)) = ExtractionFun $ \zone -> do
+  aExtr <- a zone
+  bExtr <- b zone
+  return $ E (aExtr ^. statements ++ bExtr ^. statements) (Binary (aExtr ^. expr) Mult (bExtr ^. expr))
+extractPrimF (PDivF (runExtraction -> a) (runExtraction -> b)) = ExtractionFun $ \zone -> do
+  aExtr <- a zone
+  bExtr <- b zone
+  return $ E (aExtr ^. statements ++ bExtr ^. statements) (Binary (aExtr ^. expr) Div (bExtr ^. expr))
+extractPrimF (PAbsF (runExtraction -> a)) = ExtractionFun $ \zone -> do
+  aExtr <- a zone
+  case zone of
+    Other -> do
+      return $ E (aExtr ^. statements) (CallBuiltin "abs" [aExtr ^. expr])
+    Orange -> do
+      case eqTypeRep (typeRep @a) (typeRep @Number) of
+        Just HRefl -> return $ E (aExtr ^. statements) (CallBuiltin "mpc_math.abs_fx" [aExtr ^. expr])
+        Nothing ->
+          throwM' . InternalError $
+          printf "SCALE-MAMBA does not support abs() for type %s" (show $ typeRep @a)
+extractPrimF (PSignumF _) = ExtractionFun . const $
+  throwM' . InternalError $ "we do not support signum(), please compute sign explicitly"
+extractPrimF (PExpF (runExtraction -> a)) = ExtractionFun $ \zone -> do
+  aExtr <- a zone
+  case zone of
+    Other -> return $ E (aExtr ^. statements) (CallBuiltin "math.exp" [aExtr ^. expr])
+    Orange -> do
+      case eqTypeRep (typeRep @a) (typeRep @Number) of
+        Just HRefl ->
+          return $
+          E (aExtr ^. statements)
+            (CallBuiltin "mpc_math.pow_fx" [CallBuiltin "sint" [naturalBase], aExtr ^. expr])
+        _ ->
+          throwM' . InternalError $
+          printf "SCALE-MAMBA does not support exp() for type %s" (show $ typeRep @a)
+extractPrimF (PSqrtF (runExtraction -> a)) = ExtractionFun $ \zone -> do
+  aExtr <- a zone
+  case zone of
+    Other -> return $ E (aExtr ^. statements) (CallBuiltin "math.sqrt" [aExtr ^. expr])
+    Orange -> do
+      case eqTypeRep (typeRep @a) (typeRep @Number) of
+        Just HRefl ->
+          return $
+          E (aExtr ^. statements)
+            (CallBuiltin "mpc_math.sqrt_simplified_fx" [aExtr ^. expr])
+        _ -> throwM' . InternalError $
+             printf "SCALE-MAMBA does not support sqrt() for type %s" (show $ typeRep @a)
+extractPrimF (PLogF (runExtraction -> a)) = ExtractionFun $ \zone -> do
+  aExtr <- a zone
+  case zone of
+    Other -> return $ E (aExtr ^. statements) (CallBuiltin "math.log" [aExtr ^. expr])
+    Orange -> do
+      case eqTypeRep (typeRep @a) (typeRep @Number) of
+        Just HRefl ->
+          return $
+          E (aExtr ^. statements)
+            (CallBuiltin "mpc_math.log_fx" [aExtr ^. expr])
+        _ -> throwM' . InternalError $
+             printf "SCALE-MAMBA does not support log() for type %s" (show $ typeRep @a)
+extractPrimF (PGTF (runExtraction -> a) (runExtraction -> b)) = ExtractionFun $ \zone -> do
+  aExtr <- a zone
+  bExtr <- b zone
+  return $ E (aExtr ^. statements ++ bExtr ^. statements) (Binary (aExtr ^. expr) Gt (bExtr ^. expr))
+extractPrimF (PGEF (runExtraction -> a) (runExtraction -> b)) = ExtractionFun $ \zone -> do
+  aExtr <- a zone
+  bExtr <- b zone
+  return $ E (aExtr ^. statements ++ bExtr ^. statements) (Binary (aExtr ^. expr) Ge (bExtr ^. expr))
+extractPrimF (PLTF (runExtraction -> a) (runExtraction -> b)) = ExtractionFun $ \zone -> do
+  aExtr <- a zone
+  bExtr <- b zone
+  return $ E (aExtr ^. statements ++ bExtr ^. statements) (Binary (aExtr ^. expr) Lt (bExtr ^. expr))
+extractPrimF (PLEF (runExtraction -> a) (runExtraction -> b)) = ExtractionFun $ \zone -> do
+  aExtr <- a zone
+  bExtr <- b zone
+  return $ E (aExtr ^. statements ++ bExtr ^. statements) (Binary (aExtr ^. expr) Le (bExtr ^. expr))
+extractPrimF (PEQF (runExtraction -> a) (runExtraction -> b)) = ExtractionFun $ \zone -> do
+  aExtr <- a zone
+  bExtr <- b zone
+  return $ E (aExtr ^. statements ++ bExtr ^. statements) (Binary (aExtr ^. expr) Eq_ (bExtr ^. expr))
+extractPrimF (PNEQF (runExtraction -> a) (runExtraction -> b)) = ExtractionFun $ \zone -> do
+  aExtr <- a zone
+  bExtr <- b zone
+  return $ E (aExtr ^. statements ++ bExtr ^. statements) (Binary (aExtr ^. expr) Neq (bExtr ^. expr))
+extractPrimF (PAndF (runExtraction -> a) (runExtraction -> b)) = ExtractionFun $ \zone -> do
+  aExtr <- a zone
+  bExtr <- b zone
+  case zone of
+    Other ->
+      return $ E (aExtr ^. statements ++ bExtr ^. statements) (Binary (aExtr ^. expr) Conj (bExtr ^. expr))
+    Orange ->
+      return $ E (aExtr ^. statements ++ bExtr ^. statements) (Binary (aExtr ^. expr) BConj (bExtr ^. expr))
+extractPrimF (POrF (runExtraction -> a) (runExtraction -> b)) = ExtractionFun $ \zone -> do
+  aExtr <- a zone
+  bExtr <- b zone
+  case zone of
+    Other ->
+      return $ E (aExtr ^. statements ++ bExtr ^. statements) (Binary (aExtr ^. expr) Disj (bExtr ^. expr))
+    Orange ->
+      return $ E (aExtr ^. statements ++ bExtr ^. statements) (Binary (aExtr ^. expr) BDisj (bExtr ^. expr))
+extractPrimF (PJustF (runExtraction -> a)) = ExtractionFun $ \zone -> do
+  aExtr <- a zone
+  case zone of
+    Other -> return aExtr
+    Orange ->
+      throwM' . InternalError $
+      "SCALE-MAMBA does not support just(), please remove Maybe values from orange zone computation"
+extractPrimF PNothingF = ExtractionFun $ \zone -> do
+  case zone of
+    Other -> return $ E [] None
+    Orange ->
+      throwM' . InternalError $
+      "SCALE-MAMBA does not support nothing value, please remove Maybe values from orange zone computation"
+extractPrimF (PFromJustF (runExtraction -> a)) = ExtractionFun $ \zone -> do
+  aExtr <- a zone
+  case zone of
+    Other -> return aExtr
+    Orange ->
+      throwM' . InternalError $
+      "SCALE-MAMBA does not support fromJust(), please remove Maybe values from orange zone computation"
+extractPrimF (PIsJustF (runExtraction -> a)) = ExtractionFun $ \zone -> do
+  aExtr <- a zone
+  case zone of
+    Other -> return $ E (aExtr ^. statements) (Binary (aExtr ^. expr) IsNot None)
+    Orange ->
+      throwM' . InternalError $
+      "SCALE-MAMBA does not support isJust(), please remove Maybe values from orange zone computation"
+extractPrimF (PPairF (runExtraction -> a) (runExtraction -> b)) = ExtractionFun $ \zone -> do
+  aExtr <- a zone
+  bExtr <- b zone
+  return $ E (aExtr ^. statements ++ bExtr ^. statements) (Tuple [aExtr^.expr, bExtr^.expr])
+extractPrimF (PFstF (runExtraction -> a)) = ExtractionFun $ \zone -> do
+  aExtr <- a zone
+  return $ E (aExtr ^. statements) (Index (aExtr ^. expr) (Val (I 0)))
+extractPrimF (PSndF (runExtraction -> a)) = ExtractionFun $ \zone -> do
+  aExtr <- a zone
+  return $ E (aExtr ^. statements) (Index (aExtr ^. expr) (Val (I 1)))
