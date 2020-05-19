@@ -516,6 +516,63 @@ pca row_size k db = do
     get_coord :: Int -> Name "row" (CPSFuzz f Row) -> CPSFuzz f Number
     get_coord j (N row) = row `xindex` (lit j)
 
+perceptron_iter_k_unsafe ::
+  forall r f.
+  Typeable r =>
+  Int ->
+  CPSFuzz f Weights ->
+  CPSFuzz f (Bag Row) ->
+  (CPSFuzz f Weights -> CPSFuzz f (Distr r)) ->
+  CPSFuzz f (Distr r)
+perceptron_iter_k_unsafe row_size weights db k =
+  bmap is_correctly_classified db $ \(N incorrects :: Name "incorrectly_classified" _) ->
+  bsum 1.0 incorrects $ \(N incorrect_count :: Name "incorrect_count" _) -> do
+  $(named "noised_incorrect_count") <- lap 1.0 incorrect_count
+  update (row_size - 2) noised_incorrect_count []
+  where
+    is_correctly_classified :: Name "row" (CPSFuzz f Row) -> CPSFuzz f Number
+    is_correctly_classified (N row) =
+      let y = row `xindex` (lit $ row_size - 1)
+          x = xslice row 0 (lit $ row_size - 1)
+          p = y * dot weights x
+      in if_ (p %< 0) 1 0
+
+    get_incorrectly_classified_coord :: Int -> Name "row" (CPSFuzz f Row) -> CPSFuzz f Number
+    get_incorrectly_classified_coord j (N row) =
+      let y = row `xindex` (lit $ row_size - 1)
+          x = xslice row 0 (lit $ row_size - 1)
+          p = y * dot weights x
+      in if_ (p %< 0) (row `xindex` lit j) 0
+
+    update ::
+      Int ->
+      CPSFuzz f Number ->
+      [CPSFuzz f (Distr Number)] ->
+      CPSFuzz f (Distr r)
+    update j noised_incorrect_count acc
+      | j < 0 = sequenceVec acc $ k . add weights . scale (1 / noised_incorrect_count)
+      | otherwise =
+        bmap (get_incorrectly_classified_coord j) db $ \(N db_j :: Name "db_j" _) ->
+          bsum 1.0 db_j $ \(N db_j_sum :: Name "db_j_sum" _) ->
+          update (j-1) noised_incorrect_count $ (lap 1.0 db_j_sum):acc
+
+perceptron_iter_unsafe ::
+  forall f.
+  Int ->
+  CPSFuzz f Weights ->
+  CPSFuzz f (Bag Row) ->
+  CPSFuzz f (Distr Weights)
+perceptron_iter_unsafe row_size weights db =
+  perceptron_iter_k_unsafe row_size weights db return
+
+perceptron_iter ::
+  forall f.
+  [CPSFuzz f Number] ->
+  CPSFuzz f (Bag Row) ->
+  CPSFuzz f (Distr Weights)
+perceptron_iter weights db =
+  perceptron_iter_unsafe (length weights + 1) (xvlit weights) db
+
 -- #######################
 -- # FUNNY SYNTAX TRICKS #
 -- #######################
