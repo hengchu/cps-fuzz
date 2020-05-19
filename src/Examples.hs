@@ -376,10 +376,11 @@ logistic_iter_k_unsafe ::
   Typeable r =>
   Int ->
   CPSFuzz f Weights ->
+  CPSFuzz f Number ->
   CPSFuzz f (Bag Row) ->
   (CPSFuzz f Weights -> CPSFuzz f (Distr r)) ->
   CPSFuzz f (Distr r)
-logistic_iter_k_unsafe dim weights db k =
+logistic_iter_k_unsafe dim weights learning_rate db k =
   bmap gradient db $ \((N gradients) :: Name "gradients" _) -> do
   $(named "new_weights") <- descent gradients (dim-1) []
   k new_weights
@@ -390,7 +391,8 @@ logistic_iter_k_unsafe dim weights db k =
     -- clip and noise gradient at index j
     descent :: CPSFuzz f (Bag Weights) -> Int -> [CPSFuzz f (Distr Number)] -> CPSFuzz f (Distr Weights)
     descent gs j acc
-      | j < 0 = sequenceVec acc $ \noised_gradient -> return (add weights noised_gradient)
+      | j < 0 = sequenceVec acc $
+        \noised_gradient -> return (add weights (scale learning_rate noised_gradient))
       | otherwise =
         bmap (\(N g :: Name "g" _) -> g `xindex` (lit j)) gs $ \(N gs_j :: Name "gs_j" _) ->
           bsum 1.0 gs_j $ \(N gs_j_sum :: Name "gs_j_sum" _) ->
@@ -406,15 +408,18 @@ logistic_iter_k_unsafe dim weights db k =
 logistic_iter_unsafe ::
   Int ->
   CPSFuzz f Weights ->
+  CPSFuzz f Number ->
   CPSFuzz f (Bag Row) ->
   CPSFuzz f (Distr Weights)
-logistic_iter_unsafe dim weights db = logistic_iter_k_unsafe dim weights db return
+logistic_iter_unsafe dim weights learning_rate db =
+  logistic_iter_k_unsafe dim weights learning_rate db return
 
 logistic_iter ::
   [CPSFuzz f Number] ->
+  CPSFuzz f Number ->
   CPSFuzz f (Bag Row) ->
   CPSFuzz f (Distr Weights)
-logistic_iter weights = logistic_iter_unsafe (length weights) (xvlit weights)
+logistic_iter weights learning_rate = logistic_iter_unsafe (length weights) (xvlit weights) learning_rate
 
 -- #######################
 -- # FUNNY SYNTAX TRICKS #
