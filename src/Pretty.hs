@@ -249,6 +249,20 @@ pPrimF (PSndF a) = P $ \prec ->
   let aDoc = runPretty a (precedenceTable "App")
    in parensIf (prec >= precedenceTable "App") $
         string "snd" <+> aDoc
+pPrimF (PLengthF a) = P $ \prec ->
+  let aDoc = runPretty a (precedenceTable "App")
+  in parensIf (prec >= precedenceTable "App") $
+     string "length" <+> aDoc
+pPrimF (PIndexF a idx) = P $ \prec ->
+  let aDoc = runPretty a (precedenceTable "App")
+      idxDoc = runPretty idx (precedenceTable "App" + associativityTable "App")
+  in parensIf (prec >= precedenceTable "App") $
+     string "index" <+> aDoc <+> idxDoc
+pPrimF (PSliceF a start end) = P $ \prec ->
+  let aDoc = runPretty a (precedenceTable "App")
+      startDoc = runPretty start (precedenceTable "App" + associativityTable "App")
+      endDoc = runPretty end (precedenceTable "App" + associativityTable "App" * 2)
+  in string "slice" <+> aDoc <+> startDoc <+> endDoc
 
 pMcsF :: McsF P a -> P a
 pMcsF (MRunF reprSize clip mf rf) = P $ \prec ->

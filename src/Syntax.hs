@@ -188,6 +188,11 @@ data PrimF :: (* -> *) -> * -> * where
   PPairF :: (Typeable a, Typeable b) => r a -> r b -> PrimF r (a, b)
   PFstF :: (Typeable a, Typeable b) => r (a, b) -> PrimF r a
   PSndF :: (Typeable a, Typeable b) => r (a, b) -> PrimF r b
+  PLengthF :: Typeable a => r (Vec a) -> PrimF r Int
+  PIndexF :: Typeable a => r (Vec a) -> r Int -> PrimF r a
+  PSliceF :: Typeable a => r (Vec a) -> r Int -> r Int -> PrimF r (Vec a)
+  PVecLitF :: Typeable a => [r a] -> PrimF r (Vec a)
+  PConcatF :: Typeable a => r (Vec a) -> r (Vec a) -> PrimF r (Vec a)
   deriving (HXFunctor) via (DeriveHXFunctor PrimF)
 
 -- | Bag operations.
@@ -224,6 +229,7 @@ data FlatBagOpF :: (* -> *) -> * -> * where
 -- | Control flow of the language.
 data ControlF :: (* -> *) -> * -> * where
   CIfF :: Typeable a => r Bool -> r a -> r a -> ControlF r a
+  CLoopPureF :: Typeable a => r a -> r (a -> Bool) -> r (a -> a) -> ControlF r a
   CLoopF :: Typeable a => r a -> r (a -> Bool) -> r (a -> Distr a) -> ControlF r (Distr a)
   deriving (HXFunctor) via (DeriveHXFunctor ControlF)
 
@@ -362,18 +368,21 @@ instance HFunctor ControlF where
   hmap f =
     \case
       CIfF (f -> cond) (f -> a) (f -> b) -> CIfF cond a b
+      CLoopPureF (f -> acc) (f -> cond) (f -> iter) -> CLoopPureF acc cond iter
       CLoopF (f -> acc) (f -> cond) (f -> iter) -> CLoopF acc cond iter
 
 instance HFoldable ControlF where
   hfoldMap f =
     \case
       CIfF (f -> cond) (f -> a) (f -> b) -> cond <> a <> b
+      CLoopPureF (f -> acc) (f -> cond) (f -> iter) -> acc <> cond <> iter
       CLoopF (f -> acc) (f -> cond) (f -> iter) -> acc <> cond <> iter
 
 instance HTraversable ControlF where
   htraverse f =
     \case
       CIfF (f -> cond) (f -> a) (f -> b) -> CIfF <$> cond <*> a <*> b
+      CLoopPureF (f -> acc) (f -> cond) (f -> iter) -> CLoopPureF <$> acc <*> cond <*> iter
       CLoopF (f -> acc) (f -> cond) (f -> iter) -> CLoopF <$> acc <*> cond <*> iter
 
 instance HFunctor PrimF where
@@ -404,6 +413,11 @@ instance HFunctor PrimF where
       PPairF (f -> a) (f -> b) -> PPairF a b
       PFstF (f -> a) -> PFstF a
       PSndF (f -> a) -> PSndF a
+      PLengthF (f -> a) -> PLengthF a
+      PIndexF (f -> a) (f -> idx) -> PIndexF a idx
+      PSliceF (f -> a) (f -> start) (f -> end) -> PSliceF a start end
+      PVecLitF (map f -> as) -> PVecLitF as
+      PConcatF (f -> a) (f -> b) -> PConcatF a b
 
 instance HFoldable PrimF where
   hfoldMap f =
@@ -433,6 +447,11 @@ instance HFoldable PrimF where
       PPairF (f -> a) (f -> b) -> a <> b
       PFstF (f -> a) -> a
       PSndF (f -> a) -> a
+      PLengthF (f -> a) -> a
+      PIndexF (f -> a) (f -> idx) -> a <> idx
+      PSliceF (f -> a) (f -> start) (f -> end) -> a <> start <> end
+      PVecLitF (foldMap f -> as) -> as
+      PConcatF (f -> a) (f -> b) -> a <> b
 
 instance HTraversable PrimF where
   htraverse f =
@@ -462,6 +481,11 @@ instance HTraversable PrimF where
       PPairF (f -> a) (f -> b) -> PPairF <$> a <*> b
       PFstF (f -> a) -> PFstF <$> a
       PSndF (f -> a) -> PSndF <$> a
+      PLengthF (f -> a) -> PLengthF <$> a
+      PIndexF (f -> a) (f -> idx) -> PIndexF <$> a <*> idx
+      PSliceF (f -> a) (f -> start) (f -> end) -> PSliceF <$> a <*> start <*> end
+      PVecLitF (traverse f -> as) -> PVecLitF <$> as
+      PConcatF (f -> a) (f -> b) -> PConcatF <$> a <*> b
 
 instance HFunctor McsF where
   hmap f =
@@ -623,6 +647,41 @@ loop ::
   CPSFuzz f (Distr a)
 loop acc cond iter =
   xwrap . hinject' $ CLoopF acc (toDeepRepr cond) (toDeepRepr iter)
+
+loopPure ::
+  (Typeable a, KnownSymbol s) =>
+  CPSFuzz f a ->
+  (Name s (CPSFuzz f a) -> CPSFuzz f Bool) ->
+  (Name s (CPSFuzz f a) -> CPSFuzz f a) ->
+  CPSFuzz f a
+loopPure acc cond iter =
+  xwrap . hinject' $ CLoopPureF acc (toDeepRepr cond) (toDeepRepr iter)
+
+xlength ::
+  Typeable a =>
+  CPSFuzz f (Vec a) ->
+  CPSFuzz f Int
+xlength = xwrap . hinject' . PLengthF
+
+xindex ::
+  Typeable a =>
+  CPSFuzz f (Vec a) ->
+  CPSFuzz f Int ->
+  CPSFuzz f a
+xindex a idx = xwrap . hinject' $ PIndexF a idx
+
+xvlit ::
+  Typeable a =>
+  [CPSFuzz f a] ->
+  CPSFuzz f (Vec a)
+xvlit = xwrap . hinject' . PVecLitF
+
+xconcat ::
+  Typeable a =>
+  CPSFuzz f (Vec a) ->
+  CPSFuzz f (Vec a) ->
+  CPSFuzz f (Vec a)
+xconcat a b = xwrap . hinject' $ PConcatF a b
 
 just :: Typeable a => CPSFuzz f a -> CPSFuzz f (Maybe a)
 just = xwrap . hinject' . PJustF
@@ -1060,12 +1119,14 @@ fAnyVarControlF ::
   ControlF (K (S.Set AnyVar)) a ->
   K (S.Set AnyVar) a
 fAnyVarControlF (CIfF (unK -> cond) (unK -> a) (unK -> b)) = K $ cond <> a <> b
+fAnyVarControlF (CLoopPureF (unK -> acc) (unK -> cond) (unK -> iter)) = K $ acc <> cond <> iter
 fAnyVarControlF (CLoopF (unK -> acc) (unK -> cond) (unK -> iter)) = K $ acc <> cond <> iter
 
 fvControlF ::
   ControlF (K (S.Set UniqueName)) a ->
   K (S.Set UniqueName) a
 fvControlF (CIfF (unK -> cond) (unK -> a) (unK -> b)) = K $ cond <> a <> b
+fvControlF (CLoopPureF (unK -> acc) (unK -> cond) (unK -> iter)) = K $ acc <> cond <> iter
 fvControlF (CLoopF (unK -> acc) (unK -> cond) (unK -> iter)) = K $ acc <> cond <> iter
 
 fvControlFM ::
@@ -1074,6 +1135,8 @@ fvControlFM ::
   K (m (S.Set UniqueName)) a
 fvControlFM (CIfF (unK -> cond) (unK -> a) (unK -> b)) =
   K $ S.union <$> cond <*> (S.union <$> a <*> b)
+fvControlFM (CLoopPureF (unK -> acc) (unK -> cond) (unK -> iter)) =
+  K $ S.union <$> acc <*> (S.union <$> cond <*> iter)
 fvControlFM (CLoopF (unK -> acc) (unK -> cond) (unK -> iter)) =
   K $ S.union <$> acc <*> (S.union <$> cond <*> iter)
 
@@ -1095,6 +1158,19 @@ namedControlFM (CIfF (unK -> cond) (unK -> a) (unK -> b)) = K $ do
           withHRefl @a @a' $ \HRefl ->
             withHRefl @a @b' $ \HRefl ->
               return . AnyNCPSFuzz . wrap . hinject' $ CIfF cond' a' b'
+namedControlFM (CLoopPureF ((unK -> acc) :: _ acc) ((unK -> cond) :: _ (acc -> Bool)) ((unK -> iter) :: _ (acc -> acc))) = K $ do
+  acc' <- acc
+  cond' <- cond
+  iter' <- iter
+  case (acc', cond', iter') of
+    ( AnyNCPSFuzz (acc' :: _ acc'),
+      AnyNCPSFuzz (cond' :: _ acc_arrow_bool'),
+      AnyNCPSFuzz (iter' :: _ acc_arrow_acc')
+      ) ->
+        withHRefl @acc @acc' $ \HRefl ->
+          withHRefl @(acc -> Bool) @acc_arrow_bool' $ \HRefl ->
+            withHRefl @(acc -> acc) @(acc_arrow_acc') $ \HRefl ->
+              return . AnyNCPSFuzz . wrap . hinject' $ CLoopPureF acc' cond' iter'
 namedControlFM (CLoopF ((unK -> acc) :: _ acc) ((unK -> cond) :: _ (acc -> Bool)) ((unK -> iter) :: _ (acc -> Distr acc))) = K $ do
   acc' <- acc
   cond' <- cond
@@ -1137,6 +1213,11 @@ fvPrimF (PIsJustF (unK -> a)) = K a
 fvPrimF (PPairF (unK -> a) (unK -> b)) = K $ a <> b
 fvPrimF (PFstF (unK -> a)) = K a
 fvPrimF (PSndF (unK -> a)) = K a
+fvPrimF (PLengthF (unK -> a)) = K a
+fvPrimF (PIndexF (unK -> a) (unK -> idx)) = K $ a <> idx
+fvPrimF (PSliceF (unK -> a) (unK -> start) (unK -> end)) = K $ a <> start <> end
+fvPrimF (PVecLitF (foldMap id . map unK -> as)) = K $ as
+fvPrimF (PConcatF (unK -> a) (unK -> b)) = K $ a <> b
 
 fAnyVarPrimF ::
   PrimF (K (S.Set AnyVar)) a ->
@@ -1166,6 +1247,11 @@ fAnyVarPrimF (PIsJustF (unK -> a)) = K a
 fAnyVarPrimF (PPairF (unK -> a) (unK -> b)) = K $ a <> b
 fAnyVarPrimF (PFstF (unK -> a)) = K a
 fAnyVarPrimF (PSndF (unK -> a)) = K a
+fAnyVarPrimF (PLengthF (unK -> a)) = K a
+fAnyVarPrimF (PIndexF (unK -> a) (unK -> idx)) = K $ a <> idx
+fAnyVarPrimF (PSliceF (unK -> a) (unK -> start) (unK -> end)) = K $ a <> start <> end
+fAnyVarPrimF (PVecLitF (foldMap id . map unK -> as)) = K $ as
+fAnyVarPrimF (PConcatF (unK -> a) (unK -> b)) = K $ a <> b
 
 fvPrimFM ::
   FreshM m =>
@@ -1196,6 +1282,12 @@ fvPrimFM (PIsJustF (unK -> a)) = K a
 fvPrimFM (PPairF (unK -> a) (unK -> b)) = K $ S.union <$> a <*> b
 fvPrimFM (PFstF (unK -> a)) = K a
 fvPrimFM (PSndF (unK -> a)) = K a
+fvPrimFM (PLengthF (unK -> a)) = K a
+fvPrimFM (PIndexF (unK -> a) (unK -> idx)) = K $ S.union <$> a <*> idx
+fvPrimFM (PSliceF (unK -> a) (unK -> start) (unK -> end)) =
+  K $ S.union <$> a <*> (S.union <$> start <*> end)
+fvPrimFM (PVecLitF (sequence . map unK -> as)) = K $ foldMap id <$> as
+fvPrimFM (PConcatF (unK -> a) (unK -> b)) = K $ S.union <$> a <*> b
 
 namedPrimFMBinop ::
   forall (c :: * -> Constraint) i o m.
@@ -1214,6 +1306,28 @@ namedPrimFMBinop a b comb = do
         withHRefl @i @a $ \HRefl ->
           withHRefl @i @b $ \HRefl ->
             return . AnyNCPSFuzz $ comb a' b'
+
+namedPrimFM3 ::
+  forall (constraint :: * -> Constraint) i1 i2 i3 o m.
+  (MonadThrowWithStack m, FreshM m, Typeable i1, Typeable i2, Typeable i3, Typeable o, constraint i1, constraint i2, constraint i3) =>
+  m AnyNCPSFuzz ->
+  m AnyNCPSFuzz ->
+  m AnyNCPSFuzz ->
+  (HFix NCPSFuzzF i1 -> HFix NCPSFuzzF i2 -> HFix NCPSFuzzF i3 -> HFix NCPSFuzzF o) ->
+  m AnyNCPSFuzz
+namedPrimFM3 a b c comb = do
+  a' <- a
+  b' <- b
+  c' <- c
+  case (a', b', c') of
+    ( AnyNCPSFuzz (a' :: _ a),
+      AnyNCPSFuzz (b' :: _ b),
+      AnyNCPSFuzz (c' :: _ c)
+      ) ->
+        withHRefl @i1 @a $ \HRefl ->
+          withHRefl @i2 @b $ \HRefl ->
+            withHRefl @i3 @c $ \HRefl ->
+            return . AnyNCPSFuzz $ comb a' b' c'
 
 namedPrimFMBinop2 ::
   forall (c :: * -> Constraint) i1 i2 o m.
@@ -1332,6 +1446,27 @@ namedPrimFM (PSndF ((unK -> a) :: _ (p1, p2))) =
   K
     $ namedPrimFMUnop @Typeable @(p1, p2) a
     $ wrap . hinject' . PSndF
+namedPrimFM (PLengthF ((unK -> a) :: _ (Vec a1))) =
+  K $ namedPrimFMUnop @Typeable @(Vec a1) a
+    $ wrap . hinject' . PLengthF
+namedPrimFM (PIndexF ((unK -> a) :: _ (Vec a1)) ((unK -> idx) :: _ Int)) = K
+  $ namedPrimFMBinop2 @Typeable @(Vec a1) @Int a idx
+  $ \a idx -> wrap . hinject' $ PIndexF a idx
+namedPrimFM (PSliceF ((unK -> a) :: _ (Vec a1)) (unK -> start) (unK -> end)) = K
+  $ namedPrimFM3 @Typeable @(Vec a1) @Int @Int a start end
+  $ \a start end -> wrap . hinject' $ PSliceF a start end
+namedPrimFM (PVecLitF ((sequence . map unK -> as) :: [K _ a1])) = K $ do
+  as' <- as
+  typedAs <- traverse (unwrap @a1) as'
+  return . AnyNCPSFuzz . wrap . hinject' $ PVecLitF typedAs
+  where unwrap :: forall a. Typeable a => AnyNCPSFuzz -> m (HFix NCPSFuzzF a)
+        unwrap term =
+          case term of
+            AnyNCPSFuzz (term' :: _ a') ->
+              withHRefl @a @a' $ \HRefl -> return term'
+namedPrimFM (PConcatF ((unK -> a) :: _ vec) (unK -> b)) =
+  K $ namedPrimFMBinop @Typeable @vec a b
+    $ \a b -> wrap . hinject' $ PConcatF a b
 
 fvCPSFuzzF ::
   FreshM m =>
@@ -2110,6 +2245,10 @@ eqControlF (CIfF cond a b) = IsEq $ \term ->
   case hproject' . unwrap $ term of
     Just (CIfF cond' a' b') -> cond `isEq` cond' && a `isEq` a' && b `isEq` b'
     _ -> False
+eqControlF (CLoopPureF acc pred iter) = IsEq $ \term ->
+  case hproject' . unwrap $ term of
+    Just (CLoopPureF acc' pred' iter') -> acc `isEq` acc' && pred `isEq` pred' && iter `isEq` iter'
+    _ -> False
 eqControlF (CLoopF acc pred iter) = IsEq $ \term ->
   case hproject' . unwrap $ term of
     Just (CLoopF acc' pred' iter') -> acc `isEq` acc' && pred `isEq` pred' && iter `isEq` iter'
@@ -2249,6 +2388,41 @@ eqPrimF (PSndF (a :: _ a)) = IsEq $ \term ->
         Just HRefl -> a `isEq` a'
         _ -> False
     _ -> False
+eqPrimF (PLengthF (a :: _ (Vec a1))) = IsEq $ \term ->
+  case hproject' . unwrap $ term of
+    Just (PLengthF (a' :: _ (Vec a2))) ->
+      case eqTypeRep (typeRep @a1) (typeRep @a2) of
+        Just HRefl -> a `isEq` a'
+        _ -> False
+    _ -> False
+eqPrimF (PIndexF (a :: _ (Vec a1)) (idx :: _ Int)) = IsEq $ \term ->
+  case hproject' . unwrap $ term of
+    Just (PIndexF (a' :: _ (Vec a2)) idx') ->
+      case eqTypeRep (typeRep @a1) (typeRep @a2) of
+        Just HRefl -> a `isEq` a' && idx `isEq` idx'
+        _ -> False
+    _ -> False
+eqPrimF (PSliceF (a :: _ (Vec a1)) start end) = IsEq $ \term ->
+  case hproject' . unwrap $ term of
+    Just (PSliceF (a' :: _ (Vec a2)) start' end') ->
+      case eqTypeRep (typeRep @a1) (typeRep @a2) of
+        Just HRefl -> a `isEq` a' && start `isEq` start' && end `isEq` end'
+        _ -> False
+    _ -> False
+eqPrimF (PVecLitF (as :: [_ a1])) = IsEq $ \term ->
+  case hproject' . unwrap $ term of
+    Just (PVecLitF (as' :: [_ a2])) ->
+      case eqTypeRep (typeRep @a1) (typeRep @a2) of
+        Just HRefl -> length as == length as' && (and $ zipWith isEq as as')
+        _ -> False
+    _ -> False
+eqPrimF (PConcatF (a :: _ vec) b) = IsEq $ \term ->
+  case hproject' . unwrap $ term of
+    Just (PConcatF (a' :: _ vec') b') ->
+      case eqTypeRep (typeRep @vec) (typeRep @vec') of
+        Just HRefl -> a `isEq` a' && b `isEq` b'
+        _ -> False
+    _ -> False
 
 eqNRedZoneF ::
   (HInject ExprF h,
@@ -2307,8 +2481,10 @@ instance Hashable (ExprF Hash a) where
 hashControlF :: ControlF Hash a -> Hash a
 hashControlF (CIfF cond a b) = Hash $ \salt ->
   0 `hashWithSalt` salt `hashWithSaltImpl` cond `hashWithSaltImpl` a `hashWithSaltImpl` b
-hashControlF (CLoopF acc pred iter) = Hash $ \salt ->
+hashControlF (CLoopPureF acc pred iter) = Hash $ \salt ->
   1 `hashWithSalt` salt `hashWithSaltImpl` acc `hashWithSaltImpl` pred `hashWithSaltImpl` iter
+hashControlF (CLoopF acc pred iter) = Hash $ \salt ->
+  2 `hashWithSalt` salt `hashWithSaltImpl` acc `hashWithSaltImpl` pred `hashWithSaltImpl` iter
 
 instance Hashable (ControlF Hash a) where
   hashWithSalt salt =
@@ -2365,6 +2541,18 @@ hashPrimF (PFstF a) = Hash $ \salt ->
   23 `hashWithSalt` salt `hashWithSaltImpl` a
 hashPrimF (PSndF a) = Hash $ \salt ->
   24 `hashWithSalt` salt `hashWithSaltImpl` a
+hashPrimF (PLengthF a) = Hash $ \salt ->
+  25 `hashWithSalt` salt `hashWithSaltImpl` a
+hashPrimF (PIndexF a idx) = Hash $ \salt ->
+  26 `hashWithSalt` salt `hashWithSaltImpl` a `hashWithSaltImpl` idx
+hashPrimF (PSliceF a start end) = Hash $ \salt ->
+  27 `hashWithSalt` salt `hashWithSaltImpl` a `hashWithSaltImpl` start `hashWithSaltImpl` end
+hashPrimF (PVecLitF as) = Hash $ \salt ->
+  28 `hashWithSalt` salt `go` as
+  where go salt [] = salt
+        go salt (x:xs) = go (salt `hashWithSaltImpl` x) xs
+hashPrimF (PConcatF a b) = Hash $ \salt ->
+  29 `hashWithSalt` salt `hashWithSaltImpl` a `hashWithSaltImpl` b
 
 instance Hashable (PrimF Hash a) where
   hashWithSalt salt =
@@ -2416,6 +2604,7 @@ data Literal =
   I Int
   | D Double
   | P (Literal, Literal)
+  | V (Vec Number)
   | U
   deriving (Show, Eq, Ord)
 
@@ -2430,6 +2619,9 @@ instance IsLiteral Double where
 
 instance IsLiteral () where
   toLiteral _ = U
+
+instance IsLiteral (Vec Number) where
+  toLiteral = V
 
 instance (IsLiteral a, IsLiteral b) => IsLiteral (a, b) where
   toLiteral (a, b) = P (toLiteral a, toLiteral b)

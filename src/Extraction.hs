@@ -99,6 +99,7 @@ lit2Mamba lit@(I _) = CallBuiltin "cint" [Val lit]
 lit2Mamba lit@(D _) = CallBuiltin "cfix" [Val lit]
 lit2Mamba (P (a, b)) = Tuple [lit2Mamba a, lit2Mamba b]
 lit2Mamba U = Tuple []
+lit2Mamba (V (Vec v)) = Extraction.List . map (Val . D) $ v
 
 resolveDefaultMamba :: forall a. Typeable a => Maybe (Dict (DefaultMamba a))
 resolveDefaultMamba =
@@ -198,6 +199,24 @@ extractControlF (CIfF (runExtraction -> cond) ((runExtraction -> a) :: _ r) (run
                       Assign condResultName (DotCall (Extraction.Var condResultName) "read" [])
                      ]
       return $ E stmts (Extraction.Var condResultName)
+extractControlF (CLoopPureF (runExtraction -> acc) (runExtraction -> pred) (runExtraction -> iter)) =
+  ExtractionFun $ \zone ->
+  case zone of
+    Other -> do
+      accResultName <- gfresh "loop_acc"
+      accExtr  <- acc  Other
+      predExtr <- pred Other
+      iterExtr <- iter Other
+      let condExpr = Call (predExtr ^. expr) [Extraction.Var accResultName]
+      let iterExpr = Call (iterExtr ^. expr) [Extraction.Var accResultName]
+      let stmts = accExtr ^. statements
+                  ++ predExtr ^. statements
+                  ++ iterExtr ^. statements
+                  ++ [Assign accResultName (accExtr ^. expr)]
+                  ++ [While condExpr [Assign accResultName iterExpr]]
+      return $
+        E stmts (Extraction.Var accResultName)
+    Orange -> throwM' . InternalError $ printf "pure loop is not allowed in orange zone code"
 extractControlF (CLoopF ((runExtraction -> acc) :: _ acc) (runExtraction -> pred) (runExtraction -> iter)) =
   ExtractionFun $ \zone ->
   case zone of
@@ -397,6 +416,25 @@ extractPrimF (PFstF (runExtraction -> a)) = ExtractionFun $ \zone -> do
 extractPrimF (PSndF (runExtraction -> a)) = ExtractionFun $ \zone -> do
   aExtr <- a zone
   return $ E (aExtr ^. statements) (Index (aExtr ^. expr) (Val (I 1)))
+extractPrimF (PLengthF (runExtraction -> a)) = ExtractionFun $ \zone -> do
+  aExtr <- a zone
+  return $ E (aExtr ^. statements) (CallBuiltin "len" [aExtr ^. expr])
+extractPrimF (PIndexF (runExtraction -> a) (runExtraction -> idx)) = ExtractionFun $ \zone -> do
+  aExtr <- a zone
+  idxExtr <- idx zone
+  return $ E (aExtr ^. statements ++ idxExtr ^. statements) (Index (aExtr ^. expr) (idxExtr ^. expr))
+extractPrimF (PSliceF (runExtraction -> a) (runExtraction -> start) (runExtraction -> end)) = ExtractionFun $ \zone -> do
+  aExtr <- a zone
+  startExtr <- start zone
+  endExtr <- end zone
+  return $ E (aExtr ^. statements ++ startExtr ^. statements ++ endExtr ^. statements) (Slice (aExtr ^. expr) (Just $ startExtr ^. expr) (Just $ endExtr ^. expr))
+extractPrimF (PVecLitF (map runExtraction -> as)) = ExtractionFun $ \zone -> do
+  asExtrs <- traverse ($ zone) as
+  return $ E (foldr (++) [] (map (^. statements) asExtrs)) (Extraction.List $ map (^. expr) asExtrs)
+extractPrimF (PConcatF (runExtraction -> a) (runExtraction -> b)) = ExtractionFun $ \zone -> do
+  aExtr <- a zone
+  bExtr <- b zone
+  return $ E (aExtr ^. statements ++ bExtr ^. statements) (Binary (aExtr ^. expr) Add (bExtr ^. expr))
 
 extractExprMonadF ::
   MonadThrowWithStack m =>

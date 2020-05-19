@@ -349,6 +349,7 @@ traceGraphControlF ::
   ControlF (K EffectGraph) a ->
   m (K EffectGraph a)
 traceGraphControlF (CIfF a b c) = (a .<> b) >>= \b' -> b' .<> c
+traceGraphControlF (CLoopPureF acc cond iter) = (acc .<> cond) >>= \eff -> eff .<> iter
 traceGraphControlF (CLoopF acc cond iter) = (acc .<> cond) >>= \eff -> eff .<> iter
 
 traceGraphPrimF ::
@@ -380,6 +381,15 @@ traceGraphPrimF (PIsJustF a) = return . K . unK $ a
 traceGraphPrimF (PPairF a b) = a .<> b
 traceGraphPrimF (PFstF a) = return . K . unK $ a
 traceGraphPrimF (PSndF a) = return . K . unK $ a
+traceGraphPrimF (PLengthF a) = return . K . unK $ a
+traceGraphPrimF (PIndexF a idx) = a .<> idx
+traceGraphPrimF (PSliceF a start end) = (a .<> start) >>= \m -> m .<> end
+traceGraphPrimF (PVecLitF as) = go as
+  where go []     = return $ K emptyEG
+        go (x:xs) = do
+          xsG <- go xs
+          x .<> xsG
+traceGraphPrimF (PConcatF a b) = a .<> b
 
 traceGraphF ::
   MonadThrowWithStack m =>
@@ -509,6 +519,11 @@ termShapeControlF (CIfF (unK -> cond) (unK -> b) (unK -> c)) =
   case cond of
     Yes -> K Bad
     _ -> K $ cond <> b <> c
+termShapeControlF (CLoopPureF (unK -> acc) (unK -> cond) (unK -> iter)) =
+  case (acc, cond) of
+    (Yes, _) -> K Bad
+    (_, Yes) -> K Bad
+    _ -> K $ acc <> cond <> iter
 termShapeControlF (CLoopF (unK -> acc) (unK -> cond) (unK -> iter)) =
   case (acc, cond) of
     (Yes, _) -> K Bad
@@ -541,6 +556,11 @@ termShapePrimF (PIsJustF (unK -> a)) = K a
 termShapePrimF (PPairF (unK -> a) (unK -> b)) = K $ a <> b
 termShapePrimF (PFstF (unK -> a)) = K a
 termShapePrimF (PSndF (unK -> a)) = K a
+termShapePrimF (PLengthF (unK -> a)) = K a
+termShapePrimF (PIndexF (unK -> a) (unK -> idx)) = K $ a <> idx
+termShapePrimF (PSliceF (unK -> a) (unK -> start) (unK -> end)) = K $ a <> start <> end
+termShapePrimF (PVecLitF (foldMap unK -> as)) = K as
+termShapePrimF (PConcatF (unK -> a) (unK -> b)) = K $ a <> b
 
 isPublic :: SecurityLevel -> Bool
 isPublic Public = True
@@ -821,6 +841,15 @@ inflateControlF term@(CIfF cond a b) =
             return (joinSecLvl s1 s2, wrap . hinject' $ CIfF cond' a' b')
           False ->
             throwM' $ BranchOnPrivateInformation $ S.toList (condFvs `S.difference` released)
+inflateControlF term@(CLoopPureF acc cond iter) =
+  let K fvs = fvControlF . hmap prjFvs $ term
+      ogTerm = wrap . hinject' . hmap prjOriginal $ term
+   in DelayedInflate fvs ogTerm $ \released -> do
+        (accSecLvl, acc') <- (acc ^. inflate) released
+        (condSecLvl, cond') <- (cond ^. inflate) released
+        (iterSecLvl, iter') <- (iter ^. inflate) released
+        return (accSecLvl `joinSecLvl` condSecLvl `joinSecLvl` iterSecLvl,
+                wrap . hinject' $ CLoopPureF acc' cond' iter')
 inflateControlF term@(CLoopF acc cond iter) =
   let K fvs = fvControlF . hmap prjFvs $ term
       ogTerm = wrap . hinject' . hmap prjOriginal $ term

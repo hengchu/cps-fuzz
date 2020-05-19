@@ -4,7 +4,7 @@ import Extraction
 import Text.PrettyPrint.ANSI.Leijen hiding ((<$>))
 import Text.Printf
 import Data.Maybe
-import Syntax (Literal(..))
+import Syntax (Literal(..), Vec(..))
 import Control.Lens ((^.))
 
 prec :: String -> Int
@@ -86,6 +86,7 @@ pLiteral (I i) = int i
 pLiteral (D d) = double d
 pLiteral (P (a, b)) = encloseSep lparen rparen comma [pLiteral a, pLiteral b]
 pLiteral U = string "()"
+pLiteral (V (Vec v)) = encloseSep lbracket rbracket comma $ map double v
 
 pExp :: Int -> Exp -> Doc
 pExp p (Binary a op b) =

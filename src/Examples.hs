@@ -6,9 +6,9 @@ import Data.String
 import GHC.TypeLits
 import HFunctor
 import Names
-import Syntax
+import Syntax hiding (add)
 import Type.Reflection
-import Prelude hiding ((>>=), return)
+import Prelude hiding ((>>=), return, exp)
 
 -- ############
 -- # EXAMPLES #
@@ -314,6 +314,101 @@ kmeans db = do
   kmeans_iter_k initialCentroids db $ \cs1 -> do
     kmeans_iter_k cs1 db $ \cs2 -> do
       kmeans_iter cs2 db
+
+type Weights = Vec Number
+type Row = Vec Number
+
+add :: forall f. CPSFuzz f Weights -> CPSFuzz f Weights -> CPSFuzz f Weights
+add v1 v2 = loopPure initialAcc (cond $ xlength v1) iter
+  where
+    initialAcc :: CPSFuzz f Weights
+    initialAcc = xvlit []
+
+    cond :: CPSFuzz f Int -> Name "curr_acc" (CPSFuzz f Weights) -> CPSFuzz f Bool
+    cond n (N v) = xlength v %< n
+
+    iter :: Name "curr_acc" (CPSFuzz f Weights) -> CPSFuzz f Weights
+    iter (N v) =
+      let idx = xlength v
+      in xconcat v (xvlit [v1 `xindex` idx + v2 `xindex` idx])
+
+dot :: CPSFuzz f Weights -> CPSFuzz f Weights -> CPSFuzz f Number
+dot v1 v2 = xpsnd (loopPure initialAcc (cond $ xlength v1) (iter v1 v2))
+  where
+    initialAcc :: CPSFuzz f (Int, Number)
+    initialAcc = xppair 0 0
+
+    cond :: CPSFuzz f Int -> Name "curr_acc" (CPSFuzz f (Int, Number)) -> CPSFuzz f Bool
+    cond n (N acc) = xpfst acc %< n
+
+    iter :: CPSFuzz f Weights -> CPSFuzz f Weights -> Name "curr_acc" (CPSFuzz f (Int, Number)) -> CPSFuzz f (Int, Number)
+    iter v1 v2 (N acc) =
+      let currIdx = xpfst acc
+          currSum = xpsnd acc
+      in xppair (currIdx+1) (currSum + xindex v1 currIdx * xindex v2 currIdx)
+
+scale :: forall f. CPSFuzz f Number -> CPSFuzz f Weights -> CPSFuzz f Weights
+scale k v = loopPure initialAcc (cond $ xlength v) iter
+  where
+    initialAcc :: CPSFuzz f Weights
+    initialAcc = xvlit []
+
+    cond :: CPSFuzz f Int -> Name "curr_acc" (CPSFuzz f Weights) -> CPSFuzz f Bool
+    cond n (N acc) = xlength acc %< n
+
+    iter :: Name "curr_acc" (CPSFuzz f Weights) -> CPSFuzz f Weights
+    iter (N acc) =
+      let idx = xlength acc
+      in xconcat acc (xvlit [k * (v `xindex` idx)])
+
+sequenceVec ::
+  (Typeable a, Typeable r) =>
+  [CPSFuzz f (Distr a)] ->
+  (CPSFuzz f (Vec a) -> CPSFuzz f (Distr r)) ->
+  CPSFuzz f (Distr r)
+sequenceVec []     k = k (xvlit [])
+sequenceVec (x:xs) k = do
+  $(named "x_sample") <- x
+  sequenceVec xs $ \xs -> k $ xconcat (xvlit [x_sample]) xs
+
+logistic_iter_k ::
+  forall f r.
+  Typeable r =>
+  Int ->
+  CPSFuzz f Weights ->
+  CPSFuzz f (Bag Row) ->
+  (CPSFuzz f Weights -> CPSFuzz f (Distr r)) ->
+  CPSFuzz f (Distr r)
+logistic_iter_k dim weights db k =
+  bmap gradient db $ \((N gradients) :: Name "gradients" _) -> do
+  $(named "new_weights") <- descent gradients (dim-1) []
+  k new_weights
+  where
+    gradient :: Name "row" (CPSFuzz f Weights) -> CPSFuzz f Weights
+    gradient (N row) = scale (factor weights row) row
+
+    -- clip and noise gradient at index j
+    descent :: CPSFuzz f (Bag Weights) -> Int -> [CPSFuzz f (Distr Number)] -> CPSFuzz f (Distr Weights)
+    descent gs j acc
+      | j < 0 = sequenceVec acc $ \noised_gradient -> return (add weights noised_gradient)
+      | otherwise =
+        bmap (\(N g :: Name "g" _) -> g `xindex` (lit j)) gs $ \(N gs_j :: Name "gs_j" _) ->
+          bsum 1.0 gs_j $ \(N gs_j_sum :: Name "gs_j_sum" _) ->
+          descent gs (j-1) ((lap 1.0 gs_j_sum):acc)
+
+    factor :: CPSFuzz f Weights -> CPSFuzz f Weights -> CPSFuzz f Number
+    factor w r =
+      let p = dot w r
+          n = xlength r
+          y = r `xindex` (n - 1)
+      in y * (1.0 - 1.0 / (1.0 + exp (-1.0 * y * p)))
+
+logistic_iter ::
+  Int ->
+  CPSFuzz f Weights ->
+  CPSFuzz f (Bag Row) ->
+  CPSFuzz f (Distr Weights)
+logistic_iter dim weights db = logistic_iter_k dim weights db return
 
 -- #######################
 -- # FUNNY SYNTAX TRICKS #
