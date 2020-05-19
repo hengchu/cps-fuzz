@@ -196,4 +196,4 @@ pExtraction extr =
         pExp 0 $ extr ^. expr]
 
 pExtractionStr :: Extraction -> String
-pExtractionStr = flip displayS "" . renderPretty 1.0 1000 . pExtraction
+pExtractionStr = flip displayS "" . renderPretty 1.0 5000 . pExtraction
