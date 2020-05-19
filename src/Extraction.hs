@@ -12,6 +12,7 @@ import Data.Constraint (withDict, Dict(..))
 import Text.Printf
 import Compiler (compileM)
 import Control.Monad.State.Strict
+import qualified Data.Map as M
 
 data Bop = Add   | Mult
          | Sub   | Div
@@ -53,6 +54,7 @@ data FuncDecl = FuncDecl {
   _fdName     :: UniqueName
   , _fdParams :: [UniqueName]
   , _fdBody   :: [Stmt]
+  , _fdAnnotations :: M.Map UniqueName String
   }
   deriving (Show, Eq, Ord)
 
@@ -130,10 +132,12 @@ extractExprF ::
   ExtractionFun m a
 extractExprF (EVarF (Syn.Var bound)) = ExtractionFun . const . return $
   E [] $ Extraction.Var bound
-extractExprF (ELamF (Syn.Var bound) (runExtraction -> body)) = ExtractionFun $ \zone -> do
+extractExprF (ELamF ((Syn.Var bound) :: _ var) (runExtraction -> body)) = ExtractionFun $ \zone -> do
   funName <- gfresh "anonymous_fun"
   bodyExtr <- body zone
-  let fDecl = FuncDecl funName [bound] (bodyExtr ^. statements ++ [Ret $ bodyExtr ^. expr])
+  let fDecl = FuncDecl funName [bound]
+                (bodyExtr ^. statements ++ [Ret $ bodyExtr ^. expr])
+                (M.fromList [(bound, show $ typeRep @var)])
   return $ E [Decl fDecl] $ Extraction.Var funName
 extractExprF (EAppF (runExtraction -> f) (runExtraction -> arg)) = ExtractionFun $ \zone -> do
   fExtr <- f zone
@@ -181,13 +185,15 @@ extractControlF (CIfF (runExtraction -> cond) ((runExtraction -> a) :: _ r) (run
       trueBranchName <- gfresh "if_true"
       falseBranchName <- gfresh "if_false"
       let trueFun =
-            FuncDecl trueBranchName [] $
-            aExtr ^. statements ++
-            [ExpStmt $ DotCall (Extraction.Var condResultName) "write" [aExtr ^. expr]]
+            FuncDecl trueBranchName []
+            (aExtr ^. statements ++
+             [ExpStmt $ DotCall (Extraction.Var condResultName) "write" [aExtr ^. expr]])
+            M.empty
       let falseFun =
-            FuncDecl trueBranchName [] $
-            bExtr ^. statements ++
-            [ExpStmt $ DotCall (Extraction.Var condResultName) "write" [bExtr ^. expr]]
+            FuncDecl trueBranchName []
+            (bExtr ^. statements ++
+             [ExpStmt $ DotCall (Extraction.Var condResultName) "write" [bExtr ^. expr]])
+            M.empty
       let stmts = condExtr ^. statements
                   ++ aExtr ^. statements
                   ++ bExtr ^. statements
@@ -245,8 +251,9 @@ extractControlF (CLoopF ((runExtraction -> acc) :: _ acc) (runExtraction -> pred
       loopBodyName <- gfresh "loop_body"
       let loopResultExpr = Extraction.Var loopResultName
       let iterFun =
-            FuncDecl loopBodyName [loopResultName] $
-            [ExpStmt $ DotCall loopResultExpr "write" [Call (iterExtr ^. expr) [loopResultExpr]]]
+            FuncDecl loopBodyName [loopResultName]
+              [ExpStmt $ DotCall loopResultExpr "write" [Call (iterExtr ^. expr) [loopResultExpr]]]
+              (M.fromList [(loopResultName, show $ typeRep @acc)])
       let stmts = accExtr ^. statements
                   ++ predExtr ^. statements
                   ++ iterExtr ^. statements

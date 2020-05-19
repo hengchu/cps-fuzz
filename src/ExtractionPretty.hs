@@ -6,6 +6,7 @@ import Text.Printf
 import Data.Maybe
 import Syntax (Literal(..), Vec(..))
 import Control.Lens ((^.))
+import qualified Data.Map as M
 
 prec :: String -> Int
 prec "call"  = 12000
@@ -137,12 +138,23 @@ pExp _ (Val lit) = pLiteral lit
 pExp _ None = string "None"
 
 pFuncDecl :: FuncDecl -> Doc
-pFuncDecl (FuncDecl funName funParams funBody) =
-  vsep [string "def"
-         <+> string (show funName)
-         <> encloseSep lparen rparen comma (map (string . show) funParams)
-         <> colon,
-         indent 2 . pStmts $ funBody]
+pFuncDecl (FuncDecl funName funParams funBody funAnnotations) =
+  let comments = string "\"\"\"" <> hardline <> commentsInner <> hardline <> string "\"\"\""
+      commentsInner = vsep . map (\(name, ann) -> string (show name) <> colon <+> string ann) . M.toList $ funAnnotations
+  in if M.null funAnnotations
+     then
+       vsep [string "def"
+              <+> string (show funName)
+              <> encloseSep lparen rparen comma (map (string . show) funParams)
+              <> colon,
+              indent 2 . pStmts $ funBody]
+     else
+       vsep [string "def"
+              <+> string (show funName)
+              <> encloseSep lparen rparen comma (map (string . show) funParams)
+              <> colon,
+              indent 2 comments,
+              indent 2 . pStmts $ funBody]
 
 pStmt :: Stmt -> Doc
 pStmt (ExpStmt e) = pExp 0 e
