@@ -396,3 +396,49 @@ extractPrimF (PFstF (runExtraction -> a)) = ExtractionFun $ \zone -> do
 extractPrimF (PSndF (runExtraction -> a)) = ExtractionFun $ \zone -> do
   aExtr <- a zone
   return $ E (aExtr ^. statements) (Index (aExtr ^. expr) (Val (I 1)))
+
+extractExprMonadF ::
+  MonadThrowWithStack m =>
+  ExprMonadF (ExtractionFun m) a ->
+  ExtractionFun m a
+extractExprMonadF (EParF (runExtraction -> a) (runExtraction -> b)) = ExtractionFun $ \zone -> do
+  aExtr <- a zone
+  bExtr <- b zone
+  return $ E (aExtr ^. statements ++ bExtr ^. statements) (Tuple [aExtr^.expr, bExtr^.expr])
+extractExprMonadF (ELaplaceF w (runExtraction -> a)) = ExtractionFun $ \zone -> do
+  aExtr <- a zone
+  case zone of
+    Other -> do
+      return $ E (aExtr ^. statements) (CallBuiltin "laplace" [Val (D w), aExtr ^. expr])
+    Orange -> do
+      return $ E (aExtr ^. statements) (CallBuiltin "laplace_fx" [lit2Mamba (D w), aExtr ^. expr])
+extractExprMonadF (EReturnF (runExtraction -> a)) = ExtractionFun $ \zone -> do
+  aExtr <- a zone
+  return aExtr
+extractExprMonadF (EBindF (runExtraction -> m) (Syn.Var bound) (runExtraction -> k)) = ExtractionFun $ \zone -> do
+  mExtr <- m zone
+  kExtr <- k zone
+  let stmts = mExtr ^. statements
+              ++ [Assign bound (mExtr ^. expr)]
+              ++ kExtr ^. statements
+  return $ E stmts (kExtr ^. expr)
+
+extractBmcsF ::
+  MonadThrowWithStack m =>
+  BmcsF (ExtractionFun m) a ->
+  ExtractionFun m a
+extractBmcsF (BRunF reprSize (Vec clip) (runExtraction -> mstate) (runExtraction -> mf) (runExtraction -> rstate) (runExtraction -> rf)) = ExtractionFun $ \_ -> do
+  mstateExtr <- mstate Other
+  mfExtr     <- mf Other
+  rstateExtr <- rstate Other
+  rfExtr     <- rf Orange
+  let stmts = mstateExtr ^. statements
+              ++ mfExtr ^. statements
+              ++ rstateExtr ^. statements
+              ++ rfExtr ^. statements
+  return $ E stmts (CallBuiltin "bmcs" [Val (I reprSize),
+                                        Extraction.List $ map (Val . D) clip,
+                                        mstateExtr ^. expr,
+                                        mfExtr ^. expr,
+                                        rstateExtr ^. expr,
+                                        rfExtr ^. expr])
