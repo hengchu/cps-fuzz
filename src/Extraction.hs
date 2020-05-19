@@ -10,11 +10,11 @@ import Control.Monad.Catch
 import Type.Reflection
 import Data.Constraint (withDict, Dict(..))
 import Text.Printf
+import Compiler (compileM)
+import Control.Monad.State.Strict
 
 data Bop = Add   | Mult
          | Sub   | Div
-         | Pow
-         | IDiv  | IMod
          | Lt    | Le | Gt | Ge
          | Eq_   | Neq
          | Conj  | Disj
@@ -62,6 +62,7 @@ data Extraction = E {
   _eStatements :: [Stmt],
   _eExpr :: Exp
   }
+  deriving (Show, Eq, Ord)
 
 makeLensesWith abbreviatedFields ''Extraction
 
@@ -442,3 +443,22 @@ extractBmcsF (BRunF reprSize (Vec clip) (runExtraction -> mstate) (runExtraction
                                         mfExtr ^. expr,
                                         rstateExtr ^. expr,
                                         rfExtr ^. expr])
+
+extract' :: (MonadThrowWithStack m, FreshM m) => HFix NBmcsF a -> ExtractionFun m a
+extract' = hcata' (extractBmcsF
+                   `sumAlg` extractExprMonadF
+                   `sumAlg` extractExprF
+                   `sumAlg` extractControlF
+                   `sumAlg` extractPrimF)
+
+extractM :: (MonadThrowWithStack m, FreshM m) => HFix NBmcsF a -> m Extraction
+extractM prog = runExtraction (extract' prog) Other
+
+compileAndExtract ::
+  (Typeable row, Typeable a) =>
+  String ->
+  (forall f. HXFix CPSFuzzF f (Bag row) -> HXFix CPSFuzzF f (Distr a)) ->
+  Either SomeException Extraction
+compileAndExtract db prog = flip evalStateT (nameState [UniqueName db 0]) $ do
+  bmcsProg <- compileM db prog
+  extractM bmcsProg

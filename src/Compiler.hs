@@ -963,7 +963,7 @@ compile ::
   String ->
   (forall f. HXFix CPSFuzzF f (Bag row) -> HXFix CPSFuzzF f (Distr a)) ->
   Either SomeException (HFix NBmcsF (Distr a))
-compile db prog = flip evalStateT emptyNameState (compileM db prog)
+compile db prog = flip evalStateT (nameState [UniqueName db 0]) (compileM db prog)
 
 pullMapEffectsTrans' ::
   forall (row1 :: *) (row2 :: *) m.

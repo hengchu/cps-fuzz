@@ -44,6 +44,7 @@ library
                 , Compiler
                 , Closure
                 , Extraction
+                , ExtractionPretty
   default-extensions:
                    DataKinds
                  , DeriveGeneric
