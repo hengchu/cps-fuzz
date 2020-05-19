@@ -361,6 +361,22 @@ scale k v = loopPure initialAcc (cond $ xlength v) iter
       let idx = xlength acc
       in xconcat acc (xvlit [k * (v `xindex` idx)])
 
+outer :: forall f. CPSFuzz f (Vec Number) -> CPSFuzz f (Vec Number) -> CPSFuzz f (Vec (Vec Number))
+outer u v = loopPure initialAcc (cond $ xlength u) iter
+  where
+    initialAcc :: CPSFuzz f (Vec (Vec Number))
+    initialAcc = xvlit []
+
+    cond :: CPSFuzz f Int -> Name "curr_acc" (CPSFuzz f (Vec (Vec Number))) -> CPSFuzz f Bool
+    cond n (N acc) = xlength acc %< n
+
+    iter :: Name "curr_acc" (CPSFuzz f (Vec (Vec Number))) -> CPSFuzz f (Vec (Vec Number))
+    iter (N acc) =
+      let idx = xlength acc
+          ui = u `xindex` idx
+          ui_v = scale ui v
+      in xconcat acc (xvlit [ui_v])
+
 sequenceVec ::
   (Typeable a, Typeable r) =>
   [CPSFuzz f (Distr a)] ->
@@ -470,6 +486,35 @@ naive_bayes row_size db =
 
     filter_neg_feature :: Int -> Int -> Name "row" (CPSFuzz f Row) -> CPSFuzz f Number
     filter_neg_feature n j (N row) = if_ (row `xindex` (lit $ n-1) %== 0.0) (row `xindex` (lit j)) 0.0
+
+pca ::
+  Int ->
+  CPSFuzz f Int ->
+  CPSFuzz f (Bag Row) ->
+  CPSFuzz f (Distr (Vec Row))
+pca row_size k db = do
+  compress row_size db [] $ \compressed -> do
+    let m = outer compressed compressed
+    return $ xslice m 0 k
+  where
+    compress ::
+      Typeable r =>
+      Int ->
+      CPSFuzz f (Bag Row) ->
+      [CPSFuzz f (Distr Number)] ->
+      (CPSFuzz f Row -> CPSFuzz f (Distr r)) ->
+      CPSFuzz f (Distr r)
+    compress j db acc k
+      | j < 0 = do
+          $(named "compressed") <- sequenceVec acc return
+          k compressed
+      | otherwise =
+        bmap (get_coord j) db $ \(N db_j :: Name "db_j" _) ->
+          bsum 1.0 db_j $ \(N db_j_sum :: Name "db_j_sum" _) ->
+          compress (j-1) db ((lap 1.0 db_j_sum):acc) k
+
+    get_coord :: Int -> Name "row" (CPSFuzz f Row) -> CPSFuzz f Number
+    get_coord j (N row) = row `xindex` (lit j)
 
 -- #######################
 -- # FUNNY SYNTAX TRICKS #

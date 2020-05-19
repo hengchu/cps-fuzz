@@ -663,6 +663,14 @@ xlength ::
   CPSFuzz f Int
 xlength = xwrap . hinject' . PLengthF
 
+xslice ::
+  Typeable a =>
+  CPSFuzz f (Vec a) ->
+  CPSFuzz f Int ->
+  CPSFuzz f Int ->
+  CPSFuzz f (Vec a)
+xslice v start end = xwrap . hinject' $ PSliceF v start end
+
 xindex ::
   Typeable a =>
   CPSFuzz f (Vec a) ->
