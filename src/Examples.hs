@@ -371,7 +371,7 @@ sequenceVec (x:xs) k = do
   $(named "x_sample") <- x
   sequenceVec xs $ \xs -> k $ xconcat (xvlit [x_sample]) xs
 
-logistic_iter_k ::
+logistic_iter_k_unsafe ::
   forall f r.
   Typeable r =>
   Int ->
@@ -379,7 +379,7 @@ logistic_iter_k ::
   CPSFuzz f (Bag Row) ->
   (CPSFuzz f Weights -> CPSFuzz f (Distr r)) ->
   CPSFuzz f (Distr r)
-logistic_iter_k dim weights db k =
+logistic_iter_k_unsafe dim weights db k =
   bmap gradient db $ \((N gradients) :: Name "gradients" _) -> do
   $(named "new_weights") <- descent gradients (dim-1) []
   k new_weights
@@ -403,12 +403,18 @@ logistic_iter_k dim weights db k =
           y = r `xindex` (n - 1)
       in y * (1.0 - 1.0 / (1.0 + exp (-1.0 * y * p)))
 
-logistic_iter ::
+logistic_iter_unsafe ::
   Int ->
   CPSFuzz f Weights ->
   CPSFuzz f (Bag Row) ->
   CPSFuzz f (Distr Weights)
-logistic_iter dim weights db = logistic_iter_k dim weights db return
+logistic_iter_unsafe dim weights db = logistic_iter_k_unsafe dim weights db return
+
+logistic_iter ::
+  [CPSFuzz f Number] ->
+  CPSFuzz f (Bag Row) ->
+  CPSFuzz f (Distr Weights)
+logistic_iter weights = logistic_iter_unsafe (length weights) (xvlit weights)
 
 -- #######################
 -- # FUNNY SYNTAX TRICKS #
