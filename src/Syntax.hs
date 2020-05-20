@@ -141,6 +141,7 @@ data XExprMonadF :: (* -> *) -> * -> * where
     r (Distr b) ->
     XExprMonadF r (Distr (a, b))
   XELaplaceF :: Number -> r Number -> XExprMonadF r (Distr Number)
+  XEExpF :: r (Vec Number) -> XExprMonadF r (Distr Int)
   XEReturnF :: Typeable a => r a -> XExprMonadF r (Distr a)
   XEBindF ::
     (KnownSymbol s, Typeable a, Typeable b) =>
@@ -155,6 +156,7 @@ data ExprMonadF :: (* -> *) -> * -> * where
     r (Distr b) ->
     ExprMonadF r (Distr (a, b))
   ELaplaceF :: Number -> r Number -> ExprMonadF r (Distr Number)
+  EExpF :: r (Vec Number) -> ExprMonadF r (Distr Int)
   EReturnF :: Typeable a => r a -> ExprMonadF r (Distr a)
   EBindF :: (Typeable a, Typeable b) => r (Distr a) -> Var a -> r (Distr b) -> ExprMonadF r (Distr b)
   deriving (HXFunctor) via (DeriveHXFunctor ExprMonadF)
@@ -301,6 +303,7 @@ instance HFunctor ExprMonadF where
     \case
       EParF (f -> a) (f -> b) -> EParF a b
       ELaplaceF w (f -> c) -> ELaplaceF w c
+      EExpF (f -> scores) -> EExpF scores
       EReturnF (f -> a) -> EReturnF a
       EBindF (f -> m) bound (f -> k) -> EBindF m bound k
 
@@ -309,6 +312,7 @@ instance HFoldable ExprMonadF where
     \case
       EParF (f -> a) (f -> b) -> a <> b
       ELaplaceF _ (f -> c) -> c
+      EExpF (f -> scores) -> scores
       EReturnF (f -> a) -> a
       EBindF (f -> m) _ (f -> k) -> m <> k
 
@@ -317,6 +321,7 @@ instance HTraversable ExprMonadF where
     \case
       EParF (f -> a) (f -> b) -> EParF <$> a <*> b
       ELaplaceF w (f -> c) -> ELaplaceF <$> pure w <*> c
+      EExpF (f -> scores) -> EExpF <$> scores
       EReturnF (f -> a) -> EReturnF <$> a
       EBindF (f -> m) bound (f -> k) -> EBindF <$> m <*> pure bound <*> k
 
@@ -325,6 +330,7 @@ instance HXFunctor XExprMonadF where
     \case
       XEParF (f -> a) (f -> b) -> XEParF a b
       XELaplaceF c w -> XELaplaceF c (f w)
+      XEExpF (f -> scores) -> XEExpF scores
       XEReturnF a -> XEReturnF (f a)
       XEBindF a (k :: Name s _ -> _) -> XEBindF @s (f a) (f . k . withName . g . unName)
 
@@ -608,6 +614,9 @@ share = flip app
 
 lap :: Number -> CPSFuzz f Number -> CPSFuzz f (Distr Number)
 lap w c = xwrap . hinject' $ XELaplaceF w c
+
+expm :: CPSFuzz f (Vec Number) -> CPSFuzz f (Distr Int)
+expm = xwrap . hinject' . XEExpF
 
 xpar :: (Typeable a, Typeable b) => CPSFuzz f (Distr a) -> CPSFuzz f (Distr b) -> CPSFuzz f (Distr (a, b))
 xpar a b = xwrap . hinject' $ XEParF a b
@@ -1022,6 +1031,7 @@ fAnyVarExprMonadF ::
   K (S.Set AnyVar) a
 fAnyVarExprMonadF (EParF (unK -> a) (unK -> b)) = K $ a <> b
 fAnyVarExprMonadF (ELaplaceF _ (unK -> fvs)) = K fvs
+fAnyVarExprMonadF (EExpF (unK -> scores)) = K scores
 fAnyVarExprMonadF (EReturnF (unK -> fvs)) = K fvs
 fAnyVarExprMonadF (EBindF (unK -> fvs1) bound (unK -> fvs2)) =
   K $
@@ -1032,6 +1042,7 @@ fvExprMonadF ::
   K (S.Set UniqueName) a
 fvExprMonadF (EParF (unK -> a) (unK -> b)) = K $ a <> b
 fvExprMonadF (ELaplaceF _ (unK -> fvs)) = K fvs
+fvExprMonadF (EExpF (unK -> scores)) = K scores
 fvExprMonadF (EReturnF (unK -> fvs)) = K fvs
 fvExprMonadF (EBindF (unK -> fvs1) (Var bound) (unK -> fvs2)) =
   K $
@@ -1043,6 +1054,7 @@ fvXExprMonadF ::
   K (m (S.Set UniqueName)) a
 fvXExprMonadF (XEParF (unK -> a) (unK -> b)) = K $ S.union <$> a <*> b
 fvXExprMonadF (XELaplaceF _ (unK -> w)) = K w
+fvXExprMonadF (XEExpF (unK -> scores)) = K scores
 fvXExprMonadF (XEReturnF (unK -> a)) = K a
 fvXExprMonadF (XEBindF (unK -> m) f) = K $ do
   m' <- m
@@ -1085,6 +1097,12 @@ namedXExprMonadFM (XELaplaceF w ((unK -> c) :: _ Number)) = K $ do
     AnyNCPSFuzz (c' :: _ num) ->
       withHRefl @Number @num $ \HRefl ->
         return . AnyNCPSFuzz . wrap . hinject' $ ELaplaceF w c'
+namedXExprMonadFM (XEExpF ((unK -> scores) :: _ vecnumber)) = K $ do
+  scores' <- scores
+  case scores' of
+    AnyNCPSFuzz (scores' :: _ vecnumber') ->
+      withHRefl @vecnumber @vecnumber' $ \HRefl ->
+      return . AnyNCPSFuzz . wrap . hinject' $ EExpF scores'
 
 fvXExprF ::
   FreshM m =>
@@ -2236,6 +2254,10 @@ eqExprMonadF (ELaplaceF w c) = IsEq $ \term ->
   case hproject' . unwrap $ term of
     Just (ELaplaceF w' c') -> w == w' && c `isEq` c'
     _ -> False
+eqExprMonadF (EExpF scores) = IsEq $ \term ->
+  case hproject' . unwrap $ term of
+    Just (EExpF scores') -> scores `isEq` scores'
+    _ -> False
 eqExprMonadF (EReturnF a) = IsEq $ \term ->
   case hproject' . unwrap $ term of
     Just (EReturnF a') -> a `isEq` a'
@@ -2463,10 +2485,12 @@ hashExprMonadF (EParF a b) = Hash $ \salt ->
   0 `hashWithSalt` salt `hashWithSaltImpl` a `hashWithSaltImpl` b
 hashExprMonadF (ELaplaceF w c) = Hash $ \salt ->
   1 `hashWithSalt` salt `hashWithSalt` w `hashWithSaltImpl` c
+hashExprMonadF (EExpF scores) = Hash $ \salt ->
+  2 `hashWithSalt` salt `hashWithSaltImpl` scores
 hashExprMonadF (EReturnF a) = Hash $ \salt ->
-  2 `hashWithSalt` salt `hashWithSaltImpl` a
+  3 `hashWithSalt` salt `hashWithSaltImpl` a
 hashExprMonadF (EBindF m v f) = Hash $ \salt ->
-  3 `hashWithSalt` salt `hashWithSaltImpl` m `hashWithSalt` v `hashWithSaltImpl` f
+  4 `hashWithSalt` salt `hashWithSaltImpl` m `hashWithSalt` v `hashWithSaltImpl` f
 
 instance Hashable (ExprMonadF Hash a) where
   hashWithSalt salt =

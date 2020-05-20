@@ -8,6 +8,7 @@ import HFunctor
 import Names
 import Syntax hiding (add)
 import Type.Reflection
+import Fusion
 import Prelude hiding ((>>=), return, exp, log)
 
 -- ############
@@ -382,10 +383,9 @@ sequenceVec ::
   [CPSFuzz f (Distr a)] ->
   (CPSFuzz f (Vec a) -> CPSFuzz f (Distr r)) ->
   CPSFuzz f (Distr r)
-sequenceVec []     k = k (xvlit [])
-sequenceVec (x:xs) k = do
-  $(named "x_sample") <- x
-  sequenceVec xs $ \xs -> k $ xconcat (xvlit [x_sample]) xs
+sequenceVec xs k = do
+  $(named "fused_samples") <- fuseVec xs
+  k fused_samples
 
 logistic_iter_k_unsafe ::
   forall f r.
@@ -452,40 +452,48 @@ naive_bayes row_size db =
   bmap get_label db $ \(N all_labels :: Name "all_labels" _) ->
   bsum 1.0 all_labels $ \(N label_sum :: Name "label_sum" _) -> do
   $(named "noised_label_sum") <- lap 1.0 label_sum
-  update noised_label_sum db row_size (row_size - 1) []
-
+  update (row_size - 1) [] $ \noised_sum_pairs -> do
+    let n = xlength noised_sum_pairs
+        initialAcc = xvlit []
+        cond :: Name "curr_acc" _ -> _
+        cond (N acc) = xlength acc %< n
+        iter :: Name "curr_acc" _ -> _
+        iter (N acc) =
+          let idx = xlength acc
+              noised_pos_sum = xpfst (noised_sum_pairs `xindex` idx)
+              noised_neg_sum = xpsnd (noised_sum_pairs `xindex` idx)
+              theta_pos = noised_pos_sum / noised_label_sum
+              theta_neg = noised_neg_sum / noised_label_sum
+              v = log (theta_pos / theta_neg) - log((1-theta_pos) / (1-theta_neg))
+          in acc `xconcat` (xvlit [v])
+    return $ loopPure initialAcc cond iter
   where
     get_label :: Name "row" (CPSFuzz f Row) -> CPSFuzz f Number
     get_label (N row) = if_ (row `xindex` (lit $ row_size - 1) %== 1.0) 1.0 0.0
 
     update ::
-      CPSFuzz f Number ->
-      CPSFuzz f (Bag Row) ->
+      Typeable r =>
       Int ->
-      Int ->
-      [CPSFuzz f (Distr Number)] ->
-      CPSFuzz f (Distr Weights)
-    update label_sum db n j acc
-      | j < 0 = sequenceVec acc return
+      [CPSFuzz f (Distr (Number, Number))] ->
+      (CPSFuzz f (Vec (Number, Number)) -> CPSFuzz f (Distr r)) ->
+      CPSFuzz f (Distr r)
+    update j acc k
+      | j < 0 = do
+          $(named "noised_sum_pairs") <- sequenceVec acc return
+          k noised_sum_pairs
       | otherwise =
-        bmap (filter_pos_feature n j) db $ \(N pos_feature_j :: Name "pos_feature_j" _) ->
+        bmap (filter_pos_feature j) db $ \(N pos_feature_j :: Name "pos_feature_j" _) ->
           bsum 1.0 pos_feature_j $ \(N pos_feature_j_sum :: Name "pos_feature_j_sum" _) ->
-          bmap (filter_neg_feature n j) db $ \(N neg_feature_j :: Name "neg_feature_j" _) ->
+          bmap (filter_neg_feature j) db $ \(N neg_feature_j :: Name "neg_feature_j" _) ->
           bsum 1.0 neg_feature_j $ \(N neg_feature_j_sum :: Name "neg_feature_j_sum" _) ->
-          let this = do
-                $(named "noised_sums") <- xpar (lap 1.0 pos_feature_j_sum) (lap 1.0 neg_feature_j_sum)
-                let noised_pos_sum = xpfst noised_sums
-                    noised_neg_sum = xpsnd noised_sums
-                    theta_pos = noised_pos_sum / label_sum
-                    theta_neg = noised_neg_sum / label_sum
-                return $ log (theta_pos / theta_neg) - log ((1 - theta_pos) / (1 - theta_neg))
-          in update label_sum db n (j-1) (this:acc)
+          let this = xpar (lap 1.0 pos_feature_j_sum) (lap 1.0 neg_feature_j_sum)
+          in update (j-1) (this:acc) k
 
-    filter_pos_feature :: Int -> Int -> Name "row" (CPSFuzz f Row) -> CPSFuzz f Number
-    filter_pos_feature n j (N row) = if_ (row `xindex` (lit $ n-1) %== 1.0) (row `xindex` (lit j)) 0.0
+    filter_pos_feature :: Int -> Name "row" (CPSFuzz f Row) -> CPSFuzz f Number
+    filter_pos_feature j (N row) = if_ (row `xindex` (lit $ row_size-1) %== 1.0) (row `xindex` (lit j)) 0.0
 
-    filter_neg_feature :: Int -> Int -> Name "row" (CPSFuzz f Row) -> CPSFuzz f Number
-    filter_neg_feature n j (N row) = if_ (row `xindex` (lit $ n-1) %== 0.0) (row `xindex` (lit j)) 0.0
+    filter_neg_feature ::  Int -> Name "row" (CPSFuzz f Row) -> CPSFuzz f Number
+    filter_neg_feature j (N row) = if_ (row `xindex` (lit $ row_size-1) %== 0.0) (row `xindex` (lit j)) 0.0
 
 pca ::
   Int ->
@@ -572,6 +580,10 @@ perceptron_iter ::
   CPSFuzz f (Distr Weights)
 perceptron_iter weights db =
   perceptron_iter_unsafe (length weights + 1) (xvlit weights) db
+
+simple_expm :: CPSFuzz f (Bag Number) -> CPSFuzz f (Distr Int)
+simple_expm _ =
+  expm (xvlit [1, 2, 3])
 
 -- #######################
 -- # FUNNY SYNTAX TRICKS #

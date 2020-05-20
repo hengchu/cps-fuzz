@@ -45,6 +45,7 @@ library
                 , Closure
                 , Extraction
                 , ExtractionPretty
+                , Fusion
   default-extensions:
                    DataKinds
                  , DeriveGeneric

@@ -212,6 +212,7 @@ data CompilerError
   | RequiresRedZone Doc
   | RequiresOrangeZone Doc
   | InvalidParArgument Doc
+  | InvalidSeqArgument Doc
   | ReleasesPrivateInformation
   deriving (Show)
 
@@ -332,6 +333,7 @@ traceGraphExprMonadF ::
   m (K EffectGraph a)
 traceGraphExprMonadF (EParF a b) = a .<> b
 traceGraphExprMonadF (ELaplaceF _ w) = return . K . unK $ w
+traceGraphExprMonadF (EExpF scores) = return . K . unK $ scores
 traceGraphExprMonadF (EBindF m _ k) = m .<> k
 traceGraphExprMonadF (EReturnF a) = return . K . unK $ a
 
@@ -446,7 +448,7 @@ joinSecLvl _ Private = Private
 joinSecLvl _ _ = Public
 
 data UsesBagOp = No | Yes | Bad
-  deriving (Show)
+  deriving (Show, Eq, Ord)
 
 instance Semigroup UsesBagOp where
   No <> a = a
@@ -507,6 +509,10 @@ termShapeExprMonadF (ELaplaceF _ (unK -> s)) =
   case s of
     Yes -> K Bad
     _ -> K s
+termShapeExprMonadF (EExpF (unK -> scores)) =
+  case scores of
+    Yes -> K Bad
+    _ -> K scores
 
 termShapeExprF :: ExprF (K UsesBagOp) a -> K UsesBagOp a
 termShapeExprF (EVarF _) = K No
@@ -614,8 +620,10 @@ fuseMapPaths db dbrowName ((x, xTR) : xs) g kont = do
       _ -> throwM' . InternalError $ "fuseMapPaths: expected SIMD1 here"
 
 buildReleaseTerm ::
-  forall (row :: *) r m.
+  forall (row :: *) priv pub r m.
   ( Typeable row,
+    Typeable priv,
+    Typeable pub,
     MonadThrowWithStack m,
     FreshM m
   ) =>
@@ -623,9 +631,9 @@ buildReleaseTerm ::
   EffectGraph ->
   UniqueName ->
   S.Set UniqueName ->
-  HFix NOrangeZoneF Number ->
-  (HFix NMcsF Number -> HFix NMcsF (Distr Number)) ->
-  (forall ts. Typeable ts => Int -> Vec Number -> HFix NMcsF (row -> ts) -> HFix NMcsF (ts -> Distr Number) -> m r) ->
+  HFix NOrangeZoneF priv ->
+  (HFix NMcsF priv -> HFix NMcsF (Distr pub)) ->
+  (forall ts. Typeable ts => Int -> Vec Number -> HFix NMcsF (row -> ts) -> HFix NMcsF (ts -> Distr pub) -> m r) ->
   m r
 buildReleaseTerm released g db cFvs cPure build k = do
   let privateSources = S.toList $ cFvs `S.difference` released
@@ -659,7 +667,7 @@ buildReleaseTerm released g db cFvs cPure build k = do
           releaseTerm <-
             inject' @_ @NMcsF
               <$> foldM (substWithProjection fusion oiTerm) cPure pvSrcTypeParents
-          let rls :: HFix NMcsF (ts -> Distr Number)
+          let rls :: HFix NMcsF (ts -> Distr pub)
               rls =
                 wrap . hinject' @_ @NMcsF $
                   ELamF oi (build releaseTerm)
@@ -741,6 +749,27 @@ inflateExprMonadF g db term@(ELaplaceF w c) =
                       $ return
                       $ (Public, wrap . hinject' $ MRunF reprSize clipBounds mf rf)
                   Nothing -> throwM' $ RequiresClip (SomeTypeRep $ typeRep @ts)
+inflateExprMonadF g db term@(EExpF scores) =
+  let K fvs = fvExprMonadF . hmap prjFvs $ term
+      ogTerm = wrap . hinject' $ EExpF (scores ^. original)
+      scoresFvs = scores ^. freeVars
+  in DelayedInflate fvs ogTerm $ \released -> do
+       case scoresFvs `S.isSubsetOf` released of
+         True -> do
+           (_, scores') <- (scores ^. inflate) released
+           return (Public, wrap . hinject' $ EExpF scores')
+         False -> do
+           scoresPure <- case project' @NOrangeZoneF (scores ^. original) of
+             Just scores' -> return scores'
+             Nothing -> throwM' . InternalError $
+               "inflateExprMonadF: exponential mechanism scores is not a pure term?!"
+           buildReleaseTerm @row released g db scoresFvs scoresPure (wrap . hinject' . EExpF) $
+             \reprSize clipBounds (mf :: _ (_ -> ts)) rf ->
+               case resolveClip @ts of
+                 Just dict ->
+                   withDict dict $
+                   return $ (Public, wrap . hinject' $ MRunF reprSize clipBounds mf rf)
+                 Nothing -> throwM' $ RequiresClip (SomeTypeRep $ typeRep @ts)
 inflateExprMonadF g db term@(EParF a b) =
   let K fvs = fvExprMonadF . hmap prjFvs $ term
       ogTerm = wrap . hinject' $ EParF (a ^. original) (b ^. original)

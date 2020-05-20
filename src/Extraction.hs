@@ -458,6 +458,13 @@ extractExprMonadF (ELaplaceF w (runExtraction -> a)) = ExtractionFun $ \zone -> 
       return $ E (aExtr ^. statements) (CallBuiltin "laplace" [Val (D w), aExtr ^. expr])
     Orange -> do
       return $ E (aExtr ^. statements) (CallBuiltin "laplace_fx" [lit2Mamba (D w), aExtr ^. expr])
+extractExprMonadF (EExpF (runExtraction -> scores)) = ExtractionFun $ \zone -> do
+  scoresExtr <- scores zone
+  case zone of
+    Other ->
+      return $ E (scoresExtr ^. statements) (CallBuiltin "exp_mech" [scoresExtr ^. expr])
+    Orange ->
+      return $ E (scoresExtr ^. statements) (CallBuiltin "exp_mech_fx" [scoresExtr ^. expr])
 extractExprMonadF (EReturnF (runExtraction -> a)) = ExtractionFun $ \zone -> do
   aExtr <- a zone
   return aExtr
