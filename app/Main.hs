@@ -33,6 +33,18 @@ main = do
   let Right py = compileAndExtract "db" simple_expm
   logWriteFile "extracted/simple_expm.py" (pExtractionStr py)
 
+  let Right py = compileAndExtract "db" (aboveThreshold 10.0 1.0)
+  logWriteFile "extracted/above_threshold.py" (pExtractionStr py)
+
+  let Right py = compileAndExtract "db" (histogram 10 0 1)
+  logWriteFile "extracted/histogram.py" (pExtractionStr py)
+
+  let Right py = compileAndExtract "db" (vec_sum 10)
+  logWriteFile "extracted/vec_sum.py" (pExtractionStr py)
+
+  let Right py = compileAndExtract "db" (count_mean_sketch default_hash_funs)
+  logWriteFile "extracted/count_mean_sketch.py" (pExtractionStr py)
+
   let
     fPoints :: forall f. [CPSFuzz f (Number, Number)]
     fPoints = [xppair 0.1 0.2, xppair 0.5 0.3, xppair 0.3 0.1]
@@ -45,12 +57,3 @@ main = do
 
     Right py = compileAndExtract "db" (kmedian_iter fPoints vPoints)
   logWriteFile "extracted/kmedian_iter.py" (pExtractionStr py)
-
-  let Right py = compileAndExtract "db" (aboveThreshold 10.0 1.0)
-  logWriteFile "extracted/above_threshold.py" (pExtractionStr py)
-
-  let Right py = compileAndExtract "db" (histogram 10 0 1)
-  logWriteFile "extracted/histogram.py" (pExtractionStr py)
-
-  let Right py = compileAndExtract "db" (vec_sum 10)
-  logWriteFile "extracted/vec_sum.py" (pExtractionStr py)

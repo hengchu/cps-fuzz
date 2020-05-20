@@ -717,6 +717,46 @@ vec_sum row_size db =
           bsum 1.0 coords_j $ \(N coords_j_sum :: Name "coords_j_sum" _) ->
           go (j-1) ((lap 1.0 coords_j_sum):acc)
 
+hash_fun_gen :: forall f. Int -> CPSFuzz f (Number -> Int)
+hash_fun_gen n =
+  toDeepRepr @(CPSFuzz f) $ \(N num :: Name "num" (CPSFuzz f Number)) ->
+  let left = lit . fromIntegral $ n
+      right = lit . fromIntegral $ n+1
+  in if_ (left %<= num %&& num %< right) (lit n) 0
+
+default_hash_funs :: [CPSFuzz f (Number -> Int)]
+default_hash_funs = map hash_fun_gen [0..9]
+
+count_mean_sketch_unsafe ::
+  forall f.
+  Int ->
+  CPSFuzz f (Vec (Number -> Int)) ->
+  CPSFuzz f (Bag (Number, Int)) ->
+  CPSFuzz f (Distr (Vec Number))
+count_mean_sketch_unsafe nhash_funs hash_funs db =
+  go (nhash_funs - 1) []
+  where
+    compute_coord :: Int -> Name "row" (CPSFuzz f (Number, Int)) -> CPSFuzz f Number
+    compute_coord j (N n_and_hash_idx) =
+      let n = xpfst n_and_hash_idx
+          hash_idx = xpsnd n_and_hash_idx
+          hf = hash_funs `xindex` hash_idx
+          idx = hf `xapply` n
+      in if_ (idx %== lit j) n 0
+
+    go j acc
+      | j < 0 = sequenceVec acc return
+      | otherwise =
+        bmap (compute_coord j) db $ \(N counts_j :: Name "counts_j" _) ->
+          bsum 1.0 counts_j $ \(N counts_j_sum :: Name "counts_j_sum" _) ->
+          go (j-1) ((lap 1.0 counts_j_sum):acc)
+
+count_mean_sketch ::
+  [CPSFuzz f (Number -> Int)] ->
+  CPSFuzz f (Bag (Number, Int)) ->
+  CPSFuzz f (Distr (Vec Number))
+count_mean_sketch hash_funs = count_mean_sketch_unsafe (length hash_funs) (xvlit hash_funs)
+
 -- #######################
 -- # FUNNY SYNTAX TRICKS #
 -- #######################

@@ -818,6 +818,16 @@ infixl 9 %@, `apply`
   HFix h b
 (%@) = apply
 
+xapply ::
+    ( Typeable a,
+      Typeable b,
+      HInject XExprF h
+  ) =>
+  HXFix h f (a -> b) ->
+  HXFix h f a ->
+  HXFix h f b
+xapply f arg = xwrap . hinject' $ XEAppF f arg
+
 apply ::
   ( Typeable a,
     Typeable b,
