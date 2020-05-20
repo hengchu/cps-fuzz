@@ -700,6 +700,23 @@ histogram nbuckets start end db =
           right = xpsnd bin
       in if_ (left %<= row %&& row %< right) 1 0
 
+vec_sum ::
+  Int ->
+  CPSFuzz f (Bag (Vec Number)) ->
+  CPSFuzz f (Distr (Vec Number))
+vec_sum row_size db =
+  go (row_size - 1) []
+  where
+    get_coord :: Int -> Name "row" (CPSFuzz f (Vec Number)) -> CPSFuzz f Number
+    get_coord j (N row) = row `xindex` (lit j)
+
+    go j acc
+      | j < 0 = sequenceVec acc return
+      | otherwise =
+        bmap (get_coord j) db $ \(N coords_j :: Name "coords_j" _) ->
+          bsum 1.0 coords_j $ \(N coords_j_sum :: Name "coords_j_sum" _) ->
+          go (j-1) ((lap 1.0 coords_j_sum):acc)
+
 -- #######################
 -- # FUNNY SYNTAX TRICKS #
 -- #######################
