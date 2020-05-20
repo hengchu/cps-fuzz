@@ -651,6 +651,21 @@ kmedian_iter f v db =
         go xy (x:xs) acc =
           kmedian_cost x db $ \x_cost -> go xy xs (x_cost:acc)
 
+aboveThreshold ::
+  -- | guess
+  CPSFuzz f Number ->
+  -- | threshold
+  CPSFuzz f Number ->
+  -- | Input db
+  CPSFuzz f (Bag Number) ->
+  -- | Returns new result if above threshold
+  CPSFuzz f (Distr Number)
+aboveThreshold guess thresh db =
+  bmap (\(N row :: Name "row" _) -> row) db $ \(N db :: Name "db" _) ->
+  bsum 1.0 db $ \(N sum :: Name "sum" _) -> do
+  $(named "new_result") <- lap 1.0 sum
+  return $ if_ (new_result - guess %> thresh) (new_result) (guess)
+
 -- #######################
 -- # FUNNY SYNTAX TRICKS #
 -- #######################

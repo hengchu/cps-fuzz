@@ -45,3 +45,6 @@ main = do
 
     Right py = compileAndExtract "db" (kmedian_iter fPoints vPoints)
   logWriteFile "extracted/kmedian_iter.py" (pExtractionStr py)
+
+  let Right py = compileAndExtract "db" (aboveThreshold 10.0 1.0)
+  logWriteFile "extracted/above_threshold.py" (pExtractionStr py)
