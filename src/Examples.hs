@@ -585,6 +585,72 @@ simple_expm :: CPSFuzz f (Bag Number) -> CPSFuzz f (Distr Int)
 simple_expm _ =
   expm (xvlit [1, 2, 3])
 
+kmedian_cost1 ::
+  Typeable r =>
+  CPSFuzz f Point ->
+  CPSFuzz f (Bag Point) ->
+  (CPSFuzz f Number -> CPSFuzz f r) ->
+  CPSFuzz f r
+kmedian_cost1 pt db k =
+  bmap (compute_square_dist pt) db $ \(N distances :: Name "distances" _) ->
+  bsum 1.0 distances $ \(N sum_distances :: Name "sum_distances" _) ->
+  k sum_distances
+  where
+    compute_square_dist :: CPSFuzz f Point -> Name "row" (CPSFuzz f Point) -> CPSFuzz f Number
+    compute_square_dist pt (N row) = sqdist pt row
+
+kmedian_cost ::
+  Typeable r =>
+  [CPSFuzz f Point] ->
+  CPSFuzz f (Bag Point) ->
+  (CPSFuzz f Number -> CPSFuzz f r) ->
+  CPSFuzz f r
+kmedian_cost []     _  _ = error "kmedian_cost: expected non-empty list"
+kmedian_cost [x]    db k = kmedian_cost1 x db k
+kmedian_cost (x:xs) db k =
+  kmedian_cost1 x db $ \dist_x ->
+  kmedian_cost xs db $ \dist_xs ->
+  k $ if_ (dist_x %< dist_xs) dist_x  dist_xs
+
+-- Given set a, and set b, yield a - x + y where x is from a and y is from b
+kmedian_cart_prod :: [a] -> [a] -> [([a], Int, Int)]
+kmedian_cart_prod a b =
+  let rangeA = [0..length a-1]
+      rangeB = [0..length b-1]
+  in concat $ for rangeA $ \idxA ->
+       case splitAt idxA a of
+         (left, _:right) -> for rangeB (\idxB -> (left ++ [b !! idxB] ++ right, idxA, idxB))
+         _ -> []
+    where for = flip map
+
+kmedian_iter ::
+  -- | median candidates F_i
+  [CPSFuzz f Point] ->
+  -- | total set of points V
+  [CPSFuzz f Point] ->
+  -- | Input database
+  CPSFuzz f (Bag Point) ->
+  -- | Returns a new set of candidates F_i+1
+  CPSFuzz f (Distr (Vec Point))
+kmedian_iter f v db =
+  let candidates_xy = kmedian_cart_prod f v
+      candidates = map (\(x, _, _) -> x) candidates_xy
+      xy         = map (\(_, x, y) -> xppair (lit x) (lit y)) candidates_xy
+  in go xy candidates []
+  where go xy []     acc = do
+          $(named "selected_pair") <- expm (xvlit acc)
+          let xy_idx = (xvlit xy) `xindex` selected_pair
+              x_idx = xpfst xy_idx
+              y_idx = xpsnd xy_idx
+              xs = xvlit f
+              n = length f
+              left_x = xslice xs 0 x_idx
+              right_x = xslice xs (x_idx+1) (lit n)
+              chosen = (xvlit v) `xindex` y_idx
+          return $ left_x `xconcat` (xvlit [chosen]) `xconcat` right_x
+        go xy (x:xs) acc =
+          kmedian_cost x db $ \x_cost -> go xy xs (x_cost:acc)
+
 -- #######################
 -- # FUNNY SYNTAX TRICKS #
 -- #######################
