@@ -666,6 +666,40 @@ aboveThreshold guess thresh db =
   $(named "new_result") <- lap 1.0 sum
   return $ if_ (new_result - guess %> thresh) (new_result) (guess)
 
+histogram_bins ::
+  Int ->
+  CPSFuzz f Number ->
+  CPSFuzz f Number ->
+  [CPSFuzz f (Number, Number)]
+histogram_bins n start end =
+  reverse $ go n start ((end - start) / (lit . fromIntegral $ n)) []
+  where
+    go 0 _    _     acc = acc
+    go n left width acc =
+      go (n-1) (left+width) width ((xppair left (left+width)):acc)
+
+histogram ::
+  Int ->
+  CPSFuzz f Number ->
+  CPSFuzz f Number ->
+  CPSFuzz f (Bag Number) ->
+  CPSFuzz f (Distr (Vec Number))
+histogram nbuckets start end db =
+  let bins = histogram_bins nbuckets start end
+  in go bins []
+  where
+    go []       acc = sequenceVec acc return
+    go (bin:xs) acc =
+      bmap (is_in bin) db $ \(N counts :: Name "bin_counts" _) ->
+      bsum 1.0 counts $ \(N counts_sum :: Name "bin_counts_sum" _) ->
+      go xs ((lap 1.0 counts_sum):acc)
+
+    is_in :: CPSFuzz f (Number, Number) -> Name "row" (CPSFuzz f Number) -> CPSFuzz f Number
+    is_in bin (N row) =
+      let left = xpfst bin
+          right = xpsnd bin
+      in if_ (left %<= row %&& row %< right) 1 0
+
 -- #######################
 -- # FUNNY SYNTAX TRICKS #
 -- #######################

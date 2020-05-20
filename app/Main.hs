@@ -48,3 +48,6 @@ main = do
 
   let Right py = compileAndExtract "db" (aboveThreshold 10.0 1.0)
   logWriteFile "extracted/above_threshold.py" (pExtractionStr py)
+
+  let Right py = compileAndExtract "db" (histogram 10 0 1)
+  logWriteFile "extracted/histogram.py" (pExtractionStr py)
