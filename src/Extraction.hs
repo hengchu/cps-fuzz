@@ -444,7 +444,7 @@ extractPrimF (PConcatF (runExtraction -> a) (runExtraction -> b)) = ExtractionFu
   return $ E (aExtr ^. statements ++ bExtr ^. statements) (Binary (aExtr ^. expr) Add (bExtr ^. expr))
 
 extractExprMonadF ::
-  MonadThrowWithStack m =>
+  (MonadThrowWithStack m, FreshM m) =>
   ExprMonadF (ExtractionFun m) a ->
   ExtractionFun m a
 extractExprMonadF (EParF (runExtraction -> a) (runExtraction -> b)) = ExtractionFun $ \zone -> do
@@ -465,6 +465,61 @@ extractExprMonadF (EExpF (runExtraction -> scores)) = ExtractionFun $ \zone -> d
       return $ E (scoresExtr ^. statements) (CallBuiltin "exp_mech" [scoresExtr ^. expr])
     Orange ->
       return $ E (scoresExtr ^. statements) (CallBuiltin "exp_mech_fx" [scoresExtr ^. expr])
+extractExprMonadF (EAboveThresholdF w (runExtraction -> secret) (runExtraction -> guess) (runExtraction -> thresh)) = ExtractionFun $ \zone -> do
+  secretExtr <- secret zone
+  guessExtr <- guess zone
+  threshExtr <- thresh zone
+  aboveThreshResult <- gfresh "above_thresh_result"
+  let branchCond = Binary
+        (Binary
+          (Extraction.Var aboveThreshResult)
+          Sub
+          (guessExtr ^. expr))
+        Gt
+        (threshExtr ^. expr)
+  case zone of
+    Other -> do
+      let stmts = secretExtr ^. statements
+                  ++ guessExtr ^. statements
+                  ++ threshExtr ^. statements
+                  ++ [Assign aboveThreshResult (CallBuiltin "laplace" [Val . D $ w, secretExtr ^. expr]),
+                      Cond branchCond [Skip] [Assign aboveThreshResult $ guessExtr ^. expr]]
+      return $ E stmts (Extraction.Var aboveThreshResult)
+    Orange -> do
+      let stmts = secretExtr ^. statements
+                  ++ guessExtr ^. statements
+                  ++ threshExtr ^. statements
+                  ++ [Assign aboveThreshResult (CallBuiltin "laplace_fx" [Val . D $ w, secretExtr ^. expr])]
+      let condResultInitialization =
+            CallBuiltin "MemValue" [CallBuiltin "cfix" [Extraction.Var aboveThreshResult]]
+      let condResultInitializationStmt =
+            Assign aboveThreshResult condResultInitialization
+      ifTrueFunName <- gfresh "above_thresh_true_fun"
+      let ifTrueFun =
+            FuncDecl
+              ifTrueFunName
+              []
+              [Skip]
+              M.empty
+      ifFalseFunName <- gfresh "above_thresh_false_fun"
+      let ifFalseFun =
+            FuncDecl
+              ifFalseFunName
+              []
+              [ExpStmt $ DotCall (Extraction.Var aboveThreshResult) "write" [guessExtr ^. expr]]
+              M.empty
+      let branchStmt =
+            CallBuiltin
+              "if_statement"
+              [branchCond,
+               Extraction.Var ifTrueFunName,
+               Extraction.Var ifFalseFunName]
+      return $ E (stmts
+                  ++ [condResultInitializationStmt,
+                      Decl ifTrueFun,
+                      Decl ifFalseFun,
+                      ExpStmt branchStmt,
+                      Assign aboveThreshResult $ DotCall (Extraction.Var aboveThreshResult) "read" []]) (Extraction.Var aboveThreshResult)
 extractExprMonadF (EReturnF (runExtraction -> a)) = ExtractionFun $ \zone -> do
   aExtr <- a zone
   return aExtr

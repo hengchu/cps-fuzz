@@ -213,6 +213,8 @@ data CompilerError
   | RequiresOrangeZone Doc
   | InvalidParArgument Doc
   | InvalidSeqArgument Doc
+  | PrivateAboveThresholdGuess Doc
+  | PrivateAboveThresholdThresh Doc
   | ReleasesPrivateInformation
   deriving (Show)
 
@@ -334,6 +336,8 @@ traceGraphExprMonadF ::
 traceGraphExprMonadF (EParF a b) = a .<> b
 traceGraphExprMonadF (ELaplaceF _ w) = return . K . unK $ w
 traceGraphExprMonadF (EExpF scores) = return . K . unK $ scores
+traceGraphExprMonadF (EAboveThresholdF _ secret guess thresh) =
+  (secret .<> guess) >>= \g -> g .<> thresh
 traceGraphExprMonadF (EBindF m _ k) = m .<> k
 traceGraphExprMonadF (EReturnF a) = return . K . unK $ a
 
@@ -513,6 +517,12 @@ termShapeExprMonadF (EExpF (unK -> scores)) =
   case scores of
     Yes -> K Bad
     _ -> K scores
+termShapeExprMonadF (EAboveThresholdF _ (unK -> secret) (unK -> guess) (unK -> thresh)) =
+  case (secret, guess, thresh) of
+    (Yes, _, _) -> K Bad
+    (_, Yes, _) -> K Bad
+    (_, _, Yes) -> K Bad
+    _ -> K $ secret <> guess <> thresh
 
 termShapeExprF :: ExprF (K UsesBagOp) a -> K UsesBagOp a
 termShapeExprF (EVarF _) = K No
@@ -770,6 +780,35 @@ inflateExprMonadF g db term@(EExpF scores) =
                    withDict dict $
                    return $ (Public, wrap . hinject' $ MRunF reprSize clipBounds mf rf)
                  Nothing -> throwM' $ RequiresClip (SomeTypeRep $ typeRep @ts)
+inflateExprMonadF g db term@(EAboveThresholdF w secret guess thresh) =
+  let K fvs = fvExprMonadF . hmap prjFvs $ term
+      ogTerm = wrap . hinject' $ EAboveThresholdF w (secret ^. original) (guess ^. original) (thresh ^. original)
+      secretFvs = secret ^. freeVars
+      guessFvs = guess ^. freeVars
+      threshFvs = thresh ^. freeVars
+  in DelayedInflate fvs ogTerm $ \released -> do
+    when (not $ guessFvs `S.isSubsetOf` released) $
+      throwM' $ PrivateAboveThresholdGuess (pMain $ guess ^. original)
+    when (not $ threshFvs `S.isSubsetOf` released) $
+      throwM' $ PrivateAboveThresholdThresh (pMain $ thresh ^. original)
+    (_, guess') <- (guess ^. inflate) released
+    (_, thresh') <- (thresh ^. inflate) released
+    case secretFvs `S.isSubsetOf` released of
+      True -> do
+        (_, secret') <- (secret ^. inflate) released
+        return (Public, wrap . hinject' $ EAboveThresholdF w secret' guess' thresh')
+      False -> do
+        secretPure <- case project' @NOrangeZoneF (secret ^. original) of
+          Just secret' -> return secret'
+          Nothing -> throwM' . InternalError $
+            "inflateExprMonadF: above threshold mechanism secret is not a pure term?!"
+        buildReleaseTerm @row released g db secretFvs secretPure (\s -> wrap . hinject' $ EAboveThresholdF w s guess' thresh') $
+          \reprSize clipBounds (mf :: _ (_ -> ts)) rf ->
+            case resolveClip @ts of
+              Just dict ->
+                withDict dict $
+                return $ (Public, wrap . hinject' $ MRunF reprSize clipBounds mf rf)
+              Nothing -> throwM' $ RequiresClip (SomeTypeRep $ typeRep @ts)
 inflateExprMonadF g db term@(EParF a b) =
   let K fvs = fvExprMonadF . hmap prjFvs $ term
       ogTerm = wrap . hinject' $ EParF (a ^. original) (b ^. original)

@@ -142,6 +142,7 @@ data XExprMonadF :: (* -> *) -> * -> * where
     XExprMonadF r (Distr (a, b))
   XELaplaceF :: Number -> r Number -> XExprMonadF r (Distr Number)
   XEExpF :: r (Vec Number) -> XExprMonadF r (Distr Int)
+  XEAboveThresholdF :: Number -> r Number -> r Number -> r Number -> XExprMonadF r (Distr Number)
   XEReturnF :: Typeable a => r a -> XExprMonadF r (Distr a)
   XEBindF ::
     (KnownSymbol s, Typeable a, Typeable b) =>
@@ -157,6 +158,7 @@ data ExprMonadF :: (* -> *) -> * -> * where
     ExprMonadF r (Distr (a, b))
   ELaplaceF :: Number -> r Number -> ExprMonadF r (Distr Number)
   EExpF :: r (Vec Number) -> ExprMonadF r (Distr Int)
+  EAboveThresholdF :: Number -> r Number -> r Number -> r Number -> ExprMonadF r (Distr Number)
   EReturnF :: Typeable a => r a -> ExprMonadF r (Distr a)
   EBindF :: (Typeable a, Typeable b) => r (Distr a) -> Var a -> r (Distr b) -> ExprMonadF r (Distr b)
   deriving (HXFunctor) via (DeriveHXFunctor ExprMonadF)
@@ -304,6 +306,7 @@ instance HFunctor ExprMonadF where
       EParF (f -> a) (f -> b) -> EParF a b
       ELaplaceF w (f -> c) -> ELaplaceF w c
       EExpF (f -> scores) -> EExpF scores
+      EAboveThresholdF w (f -> secret) (f -> guess) (f -> thresh) -> EAboveThresholdF w secret guess thresh
       EReturnF (f -> a) -> EReturnF a
       EBindF (f -> m) bound (f -> k) -> EBindF m bound k
 
@@ -313,6 +316,7 @@ instance HFoldable ExprMonadF where
       EParF (f -> a) (f -> b) -> a <> b
       ELaplaceF _ (f -> c) -> c
       EExpF (f -> scores) -> scores
+      EAboveThresholdF _ (f -> secret) (f -> guess) (f -> thresh) -> secret <> guess <> thresh
       EReturnF (f -> a) -> a
       EBindF (f -> m) _ (f -> k) -> m <> k
 
@@ -322,6 +326,8 @@ instance HTraversable ExprMonadF where
       EParF (f -> a) (f -> b) -> EParF <$> a <*> b
       ELaplaceF w (f -> c) -> ELaplaceF <$> pure w <*> c
       EExpF (f -> scores) -> EExpF <$> scores
+      EAboveThresholdF w (f -> secret) (f -> guess) (f -> thresh) ->
+        EAboveThresholdF <$> pure w <*> secret <*> guess <*> thresh
       EReturnF (f -> a) -> EReturnF <$> a
       EBindF (f -> m) bound (f -> k) -> EBindF <$> m <*> pure bound <*> k
 
@@ -331,6 +337,8 @@ instance HXFunctor XExprMonadF where
       XEParF (f -> a) (f -> b) -> XEParF a b
       XELaplaceF c w -> XELaplaceF c (f w)
       XEExpF (f -> scores) -> XEExpF scores
+      XEAboveThresholdF w (f -> secret) (f -> guess) (f -> thresh) ->
+        XEAboveThresholdF w secret guess thresh
       XEReturnF a -> XEReturnF (f a)
       XEBindF a (k :: Name s _ -> _) -> XEBindF @s (f a) (f . k . withName . g . unName)
 
@@ -614,6 +622,14 @@ share = flip app
 
 lap :: Number -> CPSFuzz f Number -> CPSFuzz f (Distr Number)
 lap w c = xwrap . hinject' $ XELaplaceF w c
+
+aboveThresh :: Number
+            -> CPSFuzz f Number
+            -> CPSFuzz f Number
+            -> CPSFuzz f Number
+            -> CPSFuzz f (Distr Number)
+aboveThresh w secret guess thresh =
+  xwrap . hinject' $ XEAboveThresholdF w secret guess thresh
 
 expm :: CPSFuzz f (Vec Number) -> CPSFuzz f (Distr Int)
 expm = xwrap . hinject' . XEExpF
@@ -1042,6 +1058,8 @@ fAnyVarExprMonadF ::
 fAnyVarExprMonadF (EParF (unK -> a) (unK -> b)) = K $ a <> b
 fAnyVarExprMonadF (ELaplaceF _ (unK -> fvs)) = K fvs
 fAnyVarExprMonadF (EExpF (unK -> scores)) = K scores
+fAnyVarExprMonadF (EAboveThresholdF _ (unK -> secret) (unK -> guess) (unK -> thresh)) =
+  K $ secret <> guess <> thresh
 fAnyVarExprMonadF (EReturnF (unK -> fvs)) = K fvs
 fAnyVarExprMonadF (EBindF (unK -> fvs1) bound (unK -> fvs2)) =
   K $
@@ -1053,6 +1071,8 @@ fvExprMonadF ::
 fvExprMonadF (EParF (unK -> a) (unK -> b)) = K $ a <> b
 fvExprMonadF (ELaplaceF _ (unK -> fvs)) = K fvs
 fvExprMonadF (EExpF (unK -> scores)) = K scores
+fvExprMonadF (EAboveThresholdF _ (unK -> secret) (unK -> guess) (unK -> thresh)) =
+  K $ secret <> guess <> thresh
 fvExprMonadF (EReturnF (unK -> fvs)) = K fvs
 fvExprMonadF (EBindF (unK -> fvs1) (Var bound) (unK -> fvs2)) =
   K $
@@ -1065,6 +1085,8 @@ fvXExprMonadF ::
 fvXExprMonadF (XEParF (unK -> a) (unK -> b)) = K $ S.union <$> a <*> b
 fvXExprMonadF (XELaplaceF _ (unK -> w)) = K w
 fvXExprMonadF (XEExpF (unK -> scores)) = K scores
+fvXExprMonadF (XEAboveThresholdF _ (unK -> secret) (unK -> guess) (unK -> thresh)) =
+  K $ S.union <$> secret <*> (S.union <$> guess <*> thresh)
 fvXExprMonadF (XEReturnF (unK -> a)) = K a
 fvXExprMonadF (XEBindF (unK -> m) f) = K $ do
   m' <- m
@@ -1113,6 +1135,18 @@ namedXExprMonadFM (XEExpF ((unK -> scores) :: _ vecnumber)) = K $ do
     AnyNCPSFuzz (scores' :: _ vecnumber') ->
       withHRefl @vecnumber @vecnumber' $ \HRefl ->
       return . AnyNCPSFuzz . wrap . hinject' $ EExpF scores'
+namedXExprMonadFM (XEAboveThresholdF w (unK -> secret) (unK -> guess) (unK -> thresh)) = K $ do
+  secret' <- secret
+  guess' <- guess
+  thresh' <- thresh
+  case (secret', guess', thresh') of
+    (AnyNCPSFuzz (secret' :: _ num1),
+     AnyNCPSFuzz (guess' :: _ num2),
+     AnyNCPSFuzz (thresh' :: _ num3)) ->
+      withHRefl @Number @num1 $ \HRefl ->
+      withHRefl @Number @num2 $ \HRefl ->
+      withHRefl @Number @num3 $ \HRefl ->
+      return . AnyNCPSFuzz . wrap . hinject' $ EAboveThresholdF w secret' guess' thresh'
 
 fvXExprF ::
   FreshM m =>
@@ -2268,6 +2302,11 @@ eqExprMonadF (EExpF scores) = IsEq $ \term ->
   case hproject' . unwrap $ term of
     Just (EExpF scores') -> scores `isEq` scores'
     _ -> False
+eqExprMonadF (EAboveThresholdF w secret guess thresh) = IsEq $ \term ->
+  case hproject' . unwrap $ term of
+    Just (EAboveThresholdF w' secret' guess' thresh') ->
+      w == w' && secret `isEq` secret' && guess `isEq` guess' && thresh `isEq` thresh'
+    _ -> False
 eqExprMonadF (EReturnF a) = IsEq $ \term ->
   case hproject' . unwrap $ term of
     Just (EReturnF a') -> a `isEq` a'
@@ -2497,10 +2536,16 @@ hashExprMonadF (ELaplaceF w c) = Hash $ \salt ->
   1 `hashWithSalt` salt `hashWithSalt` w `hashWithSaltImpl` c
 hashExprMonadF (EExpF scores) = Hash $ \salt ->
   2 `hashWithSalt` salt `hashWithSaltImpl` scores
+hashExprMonadF (EAboveThresholdF w secret guess thresh) = Hash $ \salt ->
+  3 `hashWithSalt`
+  salt `hashWithSalt`
+  w `hashWithSaltImpl`
+  secret `hashWithSaltImpl`
+  guess `hashWithSaltImpl` thresh
 hashExprMonadF (EReturnF a) = Hash $ \salt ->
-  3 `hashWithSalt` salt `hashWithSaltImpl` a
+  4 `hashWithSalt` salt `hashWithSaltImpl` a
 hashExprMonadF (EBindF m v f) = Hash $ \salt ->
-  4 `hashWithSalt` salt `hashWithSaltImpl` m `hashWithSalt` v `hashWithSaltImpl` f
+  5 `hashWithSalt` salt `hashWithSaltImpl` m `hashWithSalt` v `hashWithSaltImpl` f
 
 instance Hashable (ExprMonadF Hash a) where
   hashWithSalt salt =

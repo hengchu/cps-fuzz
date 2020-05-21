@@ -29,11 +29,14 @@ def anonymous_fun_3_(empty_closure_1_):
     """
     orange_input_0_: Double
     """
-    return laplace_fx(cfix(1.0),orange_input_0_)
+    above_thresh_result_0_ = laplace_fx(1.0,orange_input_0_)
+    above_thresh_result_0_ = MemValue(cfix(above_thresh_result_0_))
+    def above_thresh_true_fun_0_():
+      skip
+    def above_thresh_false_fun_0_():
+      above_thresh_result_0_.write(cfix(10.0))
+    if_statement(above_thresh_result_0_ - cfix(10.0) > cfix(1.0),above_thresh_true_fun_0_,above_thresh_false_fun_0_)
+    above_thresh_result_0_ = above_thresh_result_0_.read()
+    return above_thresh_result_0_
   return anonymous_fun_4_
-new_result_0_ = bmcs(1,[1.0],(),anonymous_fun_0_,(),anonymous_fun_3_)
-if new_result_0_ - 10.0 > 1.0:
-  cond_result_0_ = new_result_0_
-else:
-  cond_result_0_ = 10.0
-cond_result_0_
+bmcs(1,[1.0],(),anonymous_fun_0_,(),anonymous_fun_3_)

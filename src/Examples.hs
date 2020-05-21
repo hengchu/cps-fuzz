@@ -663,8 +663,8 @@ aboveThreshold ::
 aboveThreshold guess thresh db =
   bmap (\(N row :: Name "row" _) -> row) db $ \(N db :: Name "db" _) ->
   bsum 1.0 db $ \(N sum :: Name "sum" _) -> do
-  $(named "new_result") <- lap 1.0 sum
-  return $ if_ (new_result - guess %> thresh) (new_result) (guess)
+  $(named "new_result") <- aboveThresh 1.0 sum guess thresh
+  return new_result
 
 histogram_bins ::
   Int ->
