@@ -757,6 +757,105 @@ count_mean_sketch ::
   CPSFuzz f (Distr (Vec Number))
 count_mean_sketch hash_funs = count_mean_sketch_unsafe (length hash_funs) (xvlit hash_funs)
 
+type ID3Row = (Vec Number, Bool)
+
+id3_iter ::
+  [Int] ->
+  -- |Input database
+  CPSFuzz f (Bag ID3Row) ->
+  -- |Split index, if isNothing, then we are at the end
+  CPSFuzz f (Distr (Maybe Int))
+id3_iter attr_ranges db = id3_iter_k attr_ranges db return
+
+id3_iter_k ::
+  forall r f.
+  Typeable r =>
+  -- |Attributes range, if A_i's range is n, that means A_i \in [0, n), and we
+  -- assume label is binary
+  [Int] ->
+  -- |Input database
+  CPSFuzz f (Bag ID3Row) ->
+  -- |Continuation
+  (CPSFuzz f (Maybe Int) -> CPSFuzz f (Distr r)) ->
+  -- |The index of the attribute we split on
+  CPSFuzz f (Distr r)
+id3_iter_k attr_ranges db k =
+  let max_A = fromIntegral $ maximum attr_ranges in
+  bmap (\(N _ :: Name "row" _) -> 1.0) db $ \($(named "ones")) ->
+  bsum 1.0 ones $ \($(named "total_count")) -> do
+  $(named "noisy_count") <- lap 1.0 total_count
+  if_ ((noisy_count / max_A / 2) %< lit (Prelude.sqrt 2)) (k nothing) $
+    goAttrs attr_ranges [] $ \information_gain_values ->
+    k (just $ argmax information_gain_values)
+  where
+    goAttrs :: [Int]
+            -> [CPSFuzz f Number]
+            -> (CPSFuzz f (Vec Number) -> CPSFuzz f (Distr r))
+            -> CPSFuzz f (Distr r)
+    goAttrs []         acc k = k (xvlit . reverse $ acc)
+    goAttrs (range:xs) acc k =
+      goAttr (length acc) (range-1) [] $ \info_gain ->
+      goAttrs xs (info_gain:acc) k
+
+    goAttr ::
+      forall thisR. Typeable thisR =>
+      -- | which attr
+      Int ->
+      -- | decreasing attr value (we start from range-1)
+      Int ->
+      [CPSFuzz f (Distr (Number, Number))] ->
+      (CPSFuzz f Number -> CPSFuzz f (Distr thisR)) ->
+      CPSFuzz f (Distr thisR)
+    goAttr i j acc k
+      | j < 0 = do
+          sequenceVec acc $ \attr_counts -> k (information_gain (length acc) attr_counts)
+      | otherwise = do
+          bmap (is_attr_eq i j) db $ \($(named "ones")) ->
+            bsum 1.0 ones $ \($(named "ij_count")) ->
+            bmap (is_attr_pos_eq i j) db $ \($(named "pos_ones")) ->
+            bsum 1.0 pos_ones $ \($(named "pos_ij_count")) ->
+            let this = xpar (lap 1.0 ij_count) (lap 1.0 pos_ij_count) in
+            goAttr i (j-1) (this:acc) k
+
+    is_attr_eq :: Int -> Int -> Name "row" (CPSFuzz f ID3Row) -> CPSFuzz f Number
+    is_attr_eq i j (N row) =
+      let attrs = xpfst row
+      in if_ (attrs `xindex` (lit i) %== (lit . fromIntegral $ j)) 1.0 0.0
+
+    is_attr_pos_eq :: Int -> Int -> Name "row" (CPSFuzz f ID3Row) -> CPSFuzz f Number
+    is_attr_pos_eq i j (N row) =
+      let attrs = xpfst row
+          label = xpsnd row
+      in if_ (label %&& (attrs `xindex` (lit i) %== (lit . fromIntegral $ j))) 1.0 0.0
+
+    information_gain :: Int -> CPSFuzz f (Vec (Number, Number)) -> CPSFuzz f Number
+    information_gain n counts =
+      sum . flip map (enumFromTo 0 (n-1)) $ \idx ->
+      let this_count = counts `xindex` (lit idx)
+          total_count = xpfst this_count
+          pos_count = xpsnd this_count
+      in pos_count * log (pos_count / total_count)
+
+    argmax :: CPSFuzz f (Vec Number) -> CPSFuzz f Int
+    argmax v = xpsnd . xpfst $ loopPure (xppair (xppair v (0-1)) (0-99999)) cond iter
+
+    cond :: Name "curr_acc" (CPSFuzz f ((Vec Number, Int), Number))
+         -> CPSFuzz f Bool
+    cond (N p) = xlength (xpfst (xpfst p)) %> 0
+
+    iter :: Name "curr_acc" (CPSFuzz f ((Vec Number, Int), Number))
+         -> CPSFuzz f ((Vec Number, Int), Number)
+    iter (N p) =
+      let v = xpfst (xpfst p)
+          n = xlength v
+          this_value = v `xindex` (n-1)
+          v' = xslice v 0 (n-1)
+          max_idx = xpsnd (xpfst p)
+          curr_max = xpsnd p
+      in if_ (this_value %> curr_max)
+             (xppair (xppair v' (n-1)) this_value)
+             (xppair (xppair v' max_idx) curr_max)
+
 -- #######################
 -- # FUNNY SYNTAX TRICKS #
 -- #######################
