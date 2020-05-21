@@ -2,6 +2,7 @@
 
 module Examples where
 
+import Data.List
 import Data.String
 import GHC.TypeLits
 import HFunctor
@@ -785,17 +786,22 @@ id3_iter_k attr_ranges db k =
   bsum 1.0 ones $ \($(named "total_count")) -> do
   $(named "noisy_count") <- lap 1.0 total_count
   if_ ((noisy_count / max_A / 2) %< lit (Prelude.sqrt 2)) (k nothing) $
-    goAttrs attr_ranges [] $ \information_gain_values ->
-    k (just $ argmax information_gain_values)
+    goAttrs attr_ranges [] $ \noised_count_pairs ->
+    let starts = take (length attr_ranges) $ scanl' (+) 0 attr_ranges in
+    k . just . argmax . xvlit $
+      flip map (zip starts attr_ranges) $ \(start, len) ->
+      let count_pairs = xslice noised_count_pairs (lit start) (lit $ start+len) in
+      information_gain len count_pairs
   where
     goAttrs :: [Int]
-            -> [CPSFuzz f Number]
-            -> (CPSFuzz f (Vec Number) -> CPSFuzz f (Distr r))
+            -> [CPSFuzz f (Distr (Number, Number))]
+            -> (CPSFuzz f (Vec (Number, Number)) -> CPSFuzz f (Distr r))
             -> CPSFuzz f (Distr r)
-    goAttrs []         acc k = k (xvlit . reverse $ acc)
+    goAttrs []         acc k =
+      sequenceVec acc k
     goAttrs (range:xs) acc k =
-      goAttr (length acc) (range-1) [] $ \info_gain ->
-      goAttrs xs (info_gain:acc) k
+      goAttr (length acc) (range-1) [] $ \counts ->
+      goAttrs xs (counts ++ acc) k
 
     goAttr ::
       forall thisR. Typeable thisR =>
@@ -804,11 +810,10 @@ id3_iter_k attr_ranges db k =
       -- | decreasing attr value (we start from range-1)
       Int ->
       [CPSFuzz f (Distr (Number, Number))] ->
-      (CPSFuzz f Number -> CPSFuzz f (Distr thisR)) ->
+      ([CPSFuzz f (Distr (Number, Number))] -> CPSFuzz f (Distr thisR)) ->
       CPSFuzz f (Distr thisR)
     goAttr i j acc k
-      | j < 0 = do
-          sequenceVec acc $ \attr_counts -> k (information_gain (length acc) attr_counts)
+      | j < 0 = k acc
       | otherwise = do
           bmap (is_attr_eq i j) db $ \($(named "ones")) ->
             bsum 1.0 ones $ \($(named "ij_count")) ->
