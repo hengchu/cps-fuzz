@@ -51,6 +51,10 @@ main = do
   let Right py = compileAndExtract "db" (cdf 4 10)
   logWriteFile "extracted/cdf.py" (pExtractionStr py)
 
+  let Right py = compileAndExtract "db" (range_query 4 10)
+  logWriteFile "extracted/range_query.py" (pExtractionStr py)
+
+
   let
     fPoints :: forall f. [CPSFuzz f (Number, Number)]
     fPoints = [xppair 0.1 0.2, xppair 0.5 0.3, xppair 0.3 0.1]

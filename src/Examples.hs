@@ -905,6 +905,44 @@ cdf depth max db =
       in cdf_iter_k left right db $ \noised_count_distr ->
         go xs (noised_count_distr:acc)
 
+range_query_split :: Int -> Number -> [(Number, Number)]
+range_query_split = cdf_split
+
+range_query_iter_k ::
+  forall r f.
+  Typeable r =>
+  CPSFuzz f Number ->
+  CPSFuzz f Number ->
+  CPSFuzz f (Bag Number) ->
+  (CPSFuzz f (Distr Number) -> CPSFuzz f (Distr r)) ->
+  CPSFuzz f (Distr r)
+range_query_iter_k left right db k =
+  bmap is_in_range db $ \($(named "ones")) ->
+  bsum 1.0 ones $ \($(named "count")) ->
+  k (lap 1.0 count)
+  where
+    is_in_range ::
+      Name "row" (CPSFuzz f Number) ->
+      CPSFuzz f Number
+    is_in_range (N row) =
+      if_ (left %<= row %&& row %< right) 1 0
+
+range_query :: forall f.
+  Int ->
+  Number ->
+  CPSFuzz f (Bag Number) ->
+  CPSFuzz f (Distr (Vec Number))
+range_query depth max db =
+  let partitions = range_query_split depth max in
+    go partitions []
+  where
+    go []     acc = sequenceVec acc return
+    go (x:xs) acc =
+      let left = lit (fst x)
+          right = lit (snd x)
+      in range_query_iter_k left right db $ \noised_count_distr ->
+        go xs (noised_count_distr:acc)
+
 -- #######################
 -- # FUNNY SYNTAX TRICKS #
 -- #######################
