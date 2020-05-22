@@ -861,6 +861,50 @@ id3_iter_k attr_ranges db k =
              (xppair (xppair v' (n-1)) this_value)
              (xppair (xppair v' max_idx) curr_max)
 
+cdf_split :: Int -> Number -> [(Number, Number)]
+cdf_split depth max =
+  go depth 0 max []
+  where go depth left right acc
+          | depth <= 0 = acc
+          | otherwise =
+            let mid = (left + right) / 2
+            in go (depth-1) left mid (go (depth-1) mid right ((left, mid):(mid,right):acc))
+
+cdf_iter_k ::
+  forall r f.
+  Typeable r =>
+  CPSFuzz f Number ->
+  CPSFuzz f Number ->
+  CPSFuzz f (Bag Number) ->
+  (CPSFuzz f (Distr Number) -> CPSFuzz f (Distr r)) ->
+  CPSFuzz f (Distr r)
+cdf_iter_k left right db k =
+  bmap is_in_range db $ \($(named "ones")) ->
+  bsum 1.0 ones $ \($(named "count")) ->
+  k (lap 1.0 count)
+  where
+    is_in_range ::
+      Name "row" (CPSFuzz f Number) ->
+      CPSFuzz f Number
+    is_in_range (N row) =
+      if_ (left %<= row %&& row %< right) 1 0
+
+cdf :: forall f.
+  Int ->
+  Number ->
+  CPSFuzz f (Bag Number) ->
+  CPSFuzz f (Distr (Vec Number))
+cdf depth max db =
+  let partitions = cdf_split depth max in
+    go partitions []
+  where
+    go []     acc = sequenceVec acc return
+    go (x:xs) acc =
+      let left = lit (fst x)
+          right = lit (snd x)
+      in cdf_iter_k left right db $ \noised_count_distr ->
+        go xs (noised_count_distr:acc)
+
 -- #######################
 -- # FUNNY SYNTAX TRICKS #
 -- #######################

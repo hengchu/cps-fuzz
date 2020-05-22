@@ -48,6 +48,9 @@ main = do
   let Right py = compileAndExtract "db" (id3_iter [2, 3, 4, 5, 6, 7])
   logWriteFile "extracted/id3_iter.py" (pExtractionStr py)
 
+  let Right py = compileAndExtract "db" (cdf 4 10)
+  logWriteFile "extracted/cdf.py" (pExtractionStr py)
+
   let
     fPoints :: forall f. [CPSFuzz f (Number, Number)]
     fPoints = [xppair 0.1 0.2, xppair 0.5 0.3, xppair 0.3 0.1]
