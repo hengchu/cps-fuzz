@@ -54,6 +54,32 @@ main = do
   let Right py = compileAndExtract "db" (range_query 4 10)
   logWriteFile "extracted/range_query.py" (pExtractionStr py)
 
+  let
+    fPoints :: forall f. [CPSFuzz f (Number, Number)]
+    fPoints = [xppair 0.1 0.2]
+
+    vPoints1 :: forall f. [CPSFuzz f Number]
+    vPoints1 = map lit $ take 2 $ iterate (+0.1) 0
+
+    vPoints :: forall f. [CPSFuzz f (Number, Number)]
+    vPoints = [xppair x y | x <- vPoints1, y <- vPoints1]
+
+    Right py = compileAndExtract "db" (kmedian_iter fPoints vPoints)
+  logWriteFile "extracted/kmedian_iter_small.py" (pExtractionStr py)
+
+  let
+    fPoints :: forall f. [CPSFuzz f (Number, Number)]
+    fPoints = [xppair 0.1 0.2, xppair 0.3 0.1]
+
+    vPoints1 :: forall f. [CPSFuzz f Number]
+    vPoints1 = map lit $ take 3 $ iterate (+0.1) 0
+
+    vPoints :: forall f. [CPSFuzz f (Number, Number)]
+    vPoints = [xppair x y | x <- vPoints1, y <- vPoints1]
+
+    Right py = compileAndExtract "db" (kmedian_iter fPoints vPoints)
+  logWriteFile "extracted/kmedian_iter_medium.py" (pExtractionStr py)
+
 
   let
     fPoints :: forall f. [CPSFuzz f (Number, Number)]
@@ -66,4 +92,4 @@ main = do
     vPoints = [xppair x y | x <- vPoints1, y <- vPoints1]
 
     Right py = compileAndExtract "db" (kmedian_iter fPoints vPoints)
-  logWriteFile "extracted/kmedian_iter.py" (pExtractionStr py)
+  logWriteFile "extracted/kmedian_iter_large.py" (pExtractionStr py)
