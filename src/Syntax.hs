@@ -1,7 +1,8 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
-
--- | An experimental module that tries to re-implement the syntax in terms
--- of fixpoint of GADTs. Mostly useless.
+{-|
+Module: Syntax
+Description: Type-indexed AST datatypes of Fuzz, and various intermediate languages used in the Orchard compiler.
+-}
 module Syntax where
 
 import Control.Lens
@@ -25,6 +26,7 @@ import Type.Reflection
 import Data.Bits
 import Data.Hashable
 
+-- |Types that can be serialized as a vector of numbers.
 class VecStorable a where
   -- | How many dimensions does it take to store `a`?
   vecSize :: Int
@@ -32,6 +34,7 @@ class VecStorable a where
   fromVec :: Vec Number -> a
   asVec :: a -> Vec Number
 
+-- |Types whose vector-format serialization respects addition.
 class VecStorable a => VecMonoid a where
   -- | Law:
   -- 1. asVec (a `add` b) = (asVec a) + (asVec b) -- can distribute `asVec`
@@ -39,8 +42,10 @@ class VecStorable a => VecMonoid a where
   -- 3. more?
   add :: a -> a -> a
 
+  -- | The identity value for the add operation.
   empty :: a
 
+-- |Types whose vector-format serialization respects clipping.
 class VecMonoid a => Clip a where
   -- | Law:
   -- 1. asVec (clip r a) = map (clip r) (asVec a) -- can distribute `clip r`
@@ -52,21 +57,32 @@ class VecMonoid a => Clip a where
 newtype Name :: Symbol -> * -> * where
   N :: r -> Name s r
 
+-- | Give a value of type 'r' a statically chosen name 's'.
 withName :: r -> Name s r
 withName = N
 
+-- | Strip the name.
 unName :: Name s r -> r
 unName (N r) = r
 
+-- | Types that can be converted to and from deep representations encoded as the fixpoint of the language 'f'.
 class Syntactic (f :: * -> *) a where
+  -- | The type index of the deep representation.
   type DeepRepr a :: *
+
+  -- | Convert a shallow representation to a deep representation.
   toDeepRepr :: a -> f (DeepRepr a)
+
+  -- | Convert a deep representation to a shallow representation.
   fromDeepRepr :: f (DeepRepr a) -> a
 
+-- | The distribution monad. Note that this is just a stub value. Since we do not actually need to perform any probabilistic computation in the compilation phases, we do not need to use a real distribution monad for the AST representation.
 type Distr = Identity
 
+-- | Type of real numbers.
 type Number = Double
 
+-- | The shallow representation of monadic values.
 newtype Mon f m a = Mon {runMon :: forall b. Typeable b => (a -> f (m b)) -> f (m b)}
   deriving (Functor)
 
@@ -88,12 +104,14 @@ newtype Vec a = Vec [a]
   deriving (Functor, Applicative, Monad, Foldable) via []
   deriving Hashable via [a]
 
+-- | Type of type-indexed variable names.
 data Var (a :: *) where
   Var :: Typeable a => UniqueName -> Var a
 
 instance Hashable (Var a) where
   hashWithSalt salt (Var name) = salt `hashWithSalt` (typeRep @a) `hashWithSalt` name
 
+-- | A wrapper that hides the type-index for variable names.
 data AnyVar where
   AnyVar :: Typeable a => Var a -> AnyVar
 
@@ -122,11 +140,16 @@ instance Ord AnyVar where
           Just HRefl -> compare v u
           _ -> compare (SomeTypeRep ta) (SomeTypeRep tb)
 
+-- |A higher-order functor whose fixedpoint corresponds to lambda expressions
+-- in a higher-order abstract syntax encoding: variables, lambda abstractions
+-- and applications.
 data XExprF :: (* -> *) -> * -> * where
   XEVarF :: Typeable a => UniqueName -> XExprF r a
   XELamF :: (KnownSymbol s, Typeable a, Typeable b) => (Name s (r a) -> r b) -> XExprF r (a -> b)
   XEAppF :: (Typeable a, Typeable b) => r (a -> b) -> r a -> XExprF r b
 
+-- |A higher-order functor whose fixedpoint corresponds to lambda expressions in
+-- first-order representation.
 data ExprF :: (* -> *) -> * -> * where
   EVarF :: Typeable a => Var a -> ExprF r a
   ELamF :: (Typeable a, Typeable b) => Var a -> r b -> ExprF r (a -> b)
@@ -134,6 +157,8 @@ data ExprF :: (* -> *) -> * -> * where
   ECompF :: (Typeable a, Typeable b, Typeable c) => r (b -> c) -> r (a -> b) -> ExprF r (a -> c)
   deriving (HXFunctor) via (DeriveHXFunctor ExprF)
 
+-- |A higher-order functor whose fixedpoint corresponds to monad expressions
+-- in a higher-order abstract syntax encoding.
 data XExprMonadF :: (* -> *) -> * -> * where
   XEParF ::
     (Typeable a, Typeable b) =>
@@ -150,6 +175,8 @@ data XExprMonadF :: (* -> *) -> * -> * where
     (Name s (r a) -> r (Distr b)) ->
     XExprMonadF r (Distr b)
 
+-- |A higher-order functor whose fixedpoint corresponds to monad expressions in
+-- first-order encoding.
 data ExprMonadF :: (* -> *) -> * -> * where
   EParF ::
     (Typeable a, Typeable b) =>
@@ -163,7 +190,7 @@ data ExprMonadF :: (* -> *) -> * -> * where
   EBindF :: (Typeable a, Typeable b) => r (Distr a) -> Var a -> r (Distr b) -> ExprMonadF r (Distr b)
   deriving (HXFunctor) via (DeriveHXFunctor ExprMonadF)
 
--- | Primitives supported by the language.
+-- |Primitives supported by the language.
 data PrimF :: (* -> *) -> * -> * where
   -- Arithmetics related stuff.
   PLitF :: (Typeable a, Show a, IsLiteral a) => a -> PrimF r a
@@ -215,6 +242,8 @@ data BagOpF :: (* -> *) -> * -> * where
     BagOpF r t
   deriving (HXFunctor) via (DeriveHXFunctor BagOpF)
 
+-- | Bag operations that had been "flattened", such that the inputs to each bag
+-- operation is just a variable name.
 data FlatBagOpF :: (* -> *) -> * -> * where
   FBMapF ::
     (Typeable a, Typeable b, Typeable t) =>
@@ -237,6 +266,8 @@ data ControlF :: (* -> *) -> * -> * where
   CLoopF :: Typeable a => r a -> r (a -> Bool) -> r (a -> Distr a) -> ControlF r (Distr a)
   deriving (HXFunctor) via (DeriveHXFunctor ControlF)
 
+-- | Almost "BMCS" code. But the "map" and "sum" functions in this format have
+-- not gone through closure conversion yet.
 data McsF :: (* -> *) -> * -> * where
   MRunF ::
     ( Typeable row,
@@ -251,6 +282,7 @@ data McsF :: (* -> *) -> * -> * where
     McsF r (Distr result)
   deriving (HXFunctor) via (DeriveHXFunctor McsF)
 
+-- | "BMCS" code.
 data BmcsF :: (* -> *) -> * -> * where
   BRunF ::
     ( Typeable row,
@@ -540,14 +572,18 @@ instance HTraversable BmcsF where
 -- include: `Doc` for pretty-printing, `Identity` for evaluation, etc.
 type CPSFuzzF = BagOpF :+: XExprMonadF :+: XExprF :+: ControlF :+: PrimF
 
+-- | The "core" features of the language: monads, lambda expressions, control
+-- flow, and primitive operations.
 type MainF = ExprMonadF :+: ExprF :+: ControlF :+: PrimF
 
 -- | CPSFuzz, but with explicit names. This is easier for compilers to handle
 -- because everything is first-order.
 type NCPSFuzzF = BagOpF :+: MainF
 
+-- | Code that is allowed in the red-zone.
 type NRedZoneF = ExprF :+: ControlF :+: PrimF
 
+-- | Code that is allowed in the orange zone.
 type NOrangeZoneF = ExprF :+: ControlF :+: PrimF
 
 -- | Morally the same type as NCPSFuzzF, but guaranteed that all input databases
@@ -555,18 +591,26 @@ type NOrangeZoneF = ExprF :+: ControlF :+: PrimF
 -- the continuations are flattened.
 type NNormalizedF = FlatBagOpF :+: MainF
 
+-- | An IR where all bag operations have been compiled to MCS code.
 type NMcsF = McsF :+: MainF
 
+-- | The emitted code that can be extracted for BMCS computation.
 type NBmcsF = BmcsF :+: MainF
 
+-- | The user-facing embedded language: bag operations, monads, lamba
+-- expressions, control flow, and primitives.
 type CPSFuzz f = HXFix CPSFuzzF f
 
+-- | Almost the same as 'CPSFuzz', but all HOAS terms are converted to
+-- first-order terms so they can be manipulated more easily by the compilation
+-- phases.
 type NCPSFuzz f = HXFix NCPSFuzzF f
 
 -- ###############################
 -- # LANGUAGE SMART CONSTRUCTORS #
 -- ###############################
 
+-- |The embedded syntax of comparisons.
 class SynOrd (f :: * -> *) where
   infix 4 %<, %<=, %>, %>=, %==, %/=
 
@@ -577,6 +621,7 @@ class SynOrd (f :: * -> *) where
   (%==) :: (Typeable a, Ord a) => f a -> f a -> f Bool
   (%/=) :: (Typeable a, Ord a) => f a -> f a -> f Bool
 
+-- |The embedded syntax of monads.
 class SynMonad h (m :: * -> *) where
   infixl 1 >>=.
   (>>=.) ::
@@ -598,15 +643,18 @@ instance SynMonad (CPSFuzz f) Distr where
   m >>=. f = xwrap . hinject' $ XEBindF m f
   ret = xwrap . hinject' . XEReturnF
 
+-- |Construct a literal value term.
 lit :: (Typeable a, Show a, IsLiteral a) => a -> CPSFuzz f a
 lit = xwrap . hinject' . PLitF
 
+-- |Construct a variable term.
 var ::
   Typeable a =>
   UniqueName ->
   CPSFuzz f a
 var = xwrap . hinject' . XEVarF
 
+-- |Construct a lambda term from a host function.
 lam ::
   forall s a b f.
   (KnownSymbol s, Typeable a, Typeable b) =>
@@ -614,15 +662,20 @@ lam ::
   CPSFuzz f (a -> b)
 lam = xwrap . hinject' @XExprF @CPSFuzzF . XELamF
 
+-- |Construct a lambda application term.
 app :: (Typeable a, Typeable b) => CPSFuzz f (a -> b) -> CPSFuzz f a -> CPSFuzz f b
 app f t = xwrap . hinject' @XExprF @CPSFuzzF $ XEAppF f t
 
+-- |Explicitly share a term, this is basically what let-binding is in a language
+-- with an explicit surface syntax.
 share :: (Typeable a, Typeable b) => CPSFuzz f a -> CPSFuzz f (a -> b) -> CPSFuzz f b
 share = flip app
 
+-- |Laplace mechanism.
 lap :: Number -> CPSFuzz f Number -> CPSFuzz f (Distr Number)
 lap w c = xwrap . hinject' $ XELaplaceF w c
 
+-- |Above threshold mechanism.
 aboveThresh :: Number
             -> CPSFuzz f Number
             -> CPSFuzz f Number
@@ -631,39 +684,50 @@ aboveThresh :: Number
 aboveThresh w secret guess thresh =
   xwrap . hinject' $ XEAboveThresholdF w secret guess thresh
 
+-- |Exponential mechanism.
 expm :: CPSFuzz f (Vec Number) -> CPSFuzz f (Distr Int)
 expm = xwrap . hinject' . XEExpF
 
+-- |The marker 'par' term for combining independent monad terms.
 xpar :: (Typeable a, Typeable b) => CPSFuzz f (Distr a) -> CPSFuzz f (Distr b) -> CPSFuzz f (Distr (a, b))
 xpar a b = xwrap . hinject' $ XEParF a b
 
+-- |First projection from a tuple.
 xpfst :: (Typeable a, Typeable b) => CPSFuzz f (a, b) -> CPSFuzz f a
 xpfst a = xwrap . hinject' $ PFstF a
 
+-- |Second projection from a tuple.
 xpsnd :: (Typeable a, Typeable b) => CPSFuzz f (a, b) -> CPSFuzz f b
 xpsnd a = xwrap . hinject' $ PSndF a
 
+-- |Construct a tuple term.
 xppair :: (Typeable a, Typeable b) => CPSFuzz f a -> CPSFuzz f b -> CPSFuzz f (a, b)
 xppair a b = xwrap . hinject' $ PPairF a b
 
 infixr 3 %&&
 infixr 2 %||
 
+-- |Boolean conjunction.
 (%&&) :: CPSFuzz f Bool -> CPSFuzz f Bool -> CPSFuzz f Bool
 (%&&) = xpand
 
+-- |Boolean disjunction.
 (%||) :: CPSFuzz f Bool -> CPSFuzz f Bool -> CPSFuzz f Bool
 (%||) = xpor
 
+-- |Also boolean conjunction.
 xpand :: CPSFuzz f Bool -> CPSFuzz f Bool -> CPSFuzz f Bool
 xpand a b = xwrap . hinject' $ PAndF a b
 
+-- |Also boolean disjunction.
 xpor :: CPSFuzz f Bool -> CPSFuzz f Bool -> CPSFuzz f Bool
 xpor a b = xwrap . hinject' $ POrF a b
 
+-- |Construct an conditional branch term.
 if_ :: Typeable a => CPSFuzz f Bool -> CPSFuzz f a -> CPSFuzz f a -> CPSFuzz f a
 if_ cond t f = xwrap . hinject' $ CIfF cond (toDeepRepr t) (toDeepRepr f)
 
+-- |Construct an explicit loop term.
 loop ::
   (Typeable a, KnownSymbol s) =>
   CPSFuzz f a ->
@@ -673,6 +737,7 @@ loop ::
 loop acc cond iter =
   xwrap . hinject' $ CLoopF acc (toDeepRepr cond) (toDeepRepr iter)
 
+-- |Construct an explicit loop term that makes no use of probabilistic effects.
 loopPure ::
   (Typeable a, KnownSymbol s) =>
   CPSFuzz f a ->
@@ -682,12 +747,14 @@ loopPure ::
 loopPure acc cond iter =
   xwrap . hinject' $ CLoopPureF acc (toDeepRepr cond) (toDeepRepr iter)
 
+-- |Computes length of a vector.
 xlength ::
   Typeable a =>
   CPSFuzz f (Vec a) ->
   CPSFuzz f Int
 xlength = xwrap . hinject' . PLengthF
 
+-- |Extracts a slice from a vector.
 xslice ::
   Typeable a =>
   CPSFuzz f (Vec a) ->
@@ -696,6 +763,7 @@ xslice ::
   CPSFuzz f (Vec a)
 xslice v start end = xwrap . hinject' $ PSliceF v start end
 
+-- |Index into a vector.
 xindex ::
   Typeable a =>
   CPSFuzz f (Vec a) ->
@@ -703,12 +771,14 @@ xindex ::
   CPSFuzz f a
 xindex a idx = xwrap . hinject' $ PIndexF a idx
 
+-- |Construct a vector literal.
 xvlit ::
   Typeable a =>
   [CPSFuzz f a] ->
   CPSFuzz f (Vec a)
 xvlit = xwrap . hinject' . PVecLitF
 
+-- |Concatenate two vectors.
 xconcat ::
   Typeable a =>
   CPSFuzz f (Vec a) ->
@@ -716,18 +786,23 @@ xconcat ::
   CPSFuzz f (Vec a)
 xconcat a b = xwrap . hinject' $ PConcatF a b
 
+-- |Construct an optional value.
 just :: Typeable a => CPSFuzz f a -> CPSFuzz f (Maybe a)
 just = xwrap . hinject' . PJustF
 
+-- |Construct an optional value that is empty.
 nothing :: Typeable a => CPSFuzz f (Maybe a)
 nothing = xwrap . hinject' $ PNothingF
 
+-- |Tests whether an optional value contains something.
 isJust :: Typeable a => CPSFuzz f (Maybe a) -> CPSFuzz f Bool
 isJust = xwrap . hinject' . PIsJustF
 
+-- |Unwraps an optional value, assuming it contains some value.
 fromJust :: Typeable a => CPSFuzz f (Maybe a) -> CPSFuzz f a
 fromJust = xwrap . hinject' . PFromJustF
 
+-- |Construct a bag-map term.
 bmap ::
   ( KnownSymbol row,
     KnownSymbol db,
@@ -742,6 +817,8 @@ bmap ::
 bmap f input kont =
   xwrap . hinject' $ BMapF (toDeepRepr f) input (toDeepRepr kont)
 
+-- |Unwraps a bag of optional values, while providing a default value for the
+-- optional values that contained nothing.
 bmapNothing ::
   (KnownSymbol db, Typeable a, Typeable t) =>
   CPSFuzz f a ->
@@ -751,6 +828,7 @@ bmapNothing ::
 bmapNothing def input kont =
   bmap (\(N row :: Name "maybeRow" _) -> if_ (isJust row) (fromJust row) def) input kont
 
+-- |Filter a bag of values using a function as a predicate.
 bfilter ::
   forall row db a t f.
   ( KnownSymbol row,
@@ -765,6 +843,7 @@ bfilter ::
 bfilter pred input kont =
   bmap (\row -> if_ (pred row) (just (unName row)) nothing) input kont
 
+-- |Partition a bag.
 bpartition ::
   forall row db a t f.
   ( KnownSymbol row,
@@ -790,6 +869,7 @@ bpartition nparts pfun db kont =
         bfilter (\row -> pfun row %== (lit $ n -1)) db $ \(N partn :: Name db _) ->
           bpartition' (n -1) pfun db kont (partn : acc)
 
+-- |Sum a bag of numbers.
 bsum ::
   ( KnownSymbol sum,
     Typeable t
@@ -813,17 +893,21 @@ instance (Typeable a, Fractional a, Show a, IsLiteral a) => Fractional (CPSFuzz 
   a / b = xwrap . hinject' $ PDivF a b
   fromRational = xwrap . hinject' . PLitF . fromRational
 
+-- |Constructs an exponentiation term.
 exp :: CPSFuzz f Number -> CPSFuzz f Number
 exp = xwrap . hinject' . PExpF
 
+-- |Constructs a logarithm term.
 log :: CPSFuzz f Number -> CPSFuzz f Number
 log = xwrap . hinject' . PLogF
 
+-- |Constructs a square-root term.
 sqrt :: CPSFuzz f Number -> CPSFuzz f Number
 sqrt = xwrap . hinject' . PSqrtF
 
 infixl 9 %@, `apply`
 
+-- |Infix version of 'xapply'.
 (%@) ::
   ( Typeable a,
     Typeable b,
@@ -834,6 +918,7 @@ infixl 9 %@, `apply`
   HFix h b
 (%@) = apply
 
+-- |Constructs a HOAS apply term, generically.
 xapply ::
     ( Typeable a,
       Typeable b,
@@ -844,6 +929,7 @@ xapply ::
   HXFix h f b
 xapply f arg = xwrap . hinject' $ XEAppF f arg
 
+-- |Constructs a first-order apply term, generically.
 apply ::
   ( Typeable a,
     Typeable b,
@@ -854,6 +940,7 @@ apply ::
   HFix h b
 apply f arg = wrap . hinject' $ EAppF f arg
 
+-- |Constructs a function composition term, generically.
 compose ::
   forall h a b c.
   ( HInject ExprF h,
@@ -866,6 +953,7 @@ compose ::
   HFix h (a -> c)
 compose bc ab = wrap . hinject' $ ECompF bc ab
 
+-- |Constructs a "par" term.
 par ::
   forall h a b.
   ( HInject ExprMonadF h,
@@ -877,6 +965,7 @@ par ::
   HFix h (Distr (a, b))
 par a b = wrap . hinject' $ EParF a b
 
+-- |Constructs a tuple term.
 pair ::
   forall h a b.
   ( HInject PrimF h,
@@ -888,6 +977,7 @@ pair ::
   HFix h (a, b)
 pair a b = wrap . hinject' $ PPairF a b
 
+-- |Constructs a first-projection term.
 pfst ::
   forall h a b.
   ( HInject PrimF h,
@@ -898,6 +988,7 @@ pfst ::
   HFix h a
 pfst = wrap . hinject' . PFstF
 
+-- |Constructs a second-projection term.
 psnd ::
   forall h a b.
   ( HInject PrimF h,
