@@ -1,3 +1,7 @@
+{-|
+Module: Closure
+Description: Implementations of top-level closure conversion
+-}
 module Closure where
 
 import Control.Monad.Catch
@@ -9,28 +13,37 @@ import Syntax
 import Text.Printf
 import Type.Reflection
 
+-- |The representation of a type-indexed top-level closure. Basically a
+-- type-indexed n-tuple of free variable names in a lambda.
 data Closure :: * -> * where
   C1 :: Typeable a => Var a -> Closure a
   CCons :: (Typeable a, Typeable b) => Closure a -> Var b -> Closure (a, b)
 
+-- |Convert the extracted closure into a term.
 closureTerm :: (HInject ExprF h, HInject PrimF h) => Closure cls -> HFix h cls
 closureTerm (C1 v) = wrap . hinject' $ EVarF v
 closureTerm (CCons (closureTerm -> cls') v) = pair cls' (wrap . hinject' $ EVarF v)
 
+-- |Feed the extracted closure to a continuation.
 buildClosure :: [AnyVar] -> (forall cls. Typeable cls => Closure cls -> r) -> r
 buildClosure [] _ = error "buildClosure: expected at least 1 free variable"
 buildClosure [AnyVar x] k = k (C1 x)
 buildClosure ((AnyVar x) : xs) k = buildClosure xs $ \cls -> k $ CCons cls x
 
-data ClosureConvertError = InternalError String
+-- |Errors that may arise during closure conversion.
+data ClosureConvertError =
+  -- |InternalError is a compiler bug.
+  InternalError String
   deriving (Show)
 
 instance Exception ClosureConvertError
 
+-- |Checks whether a variable exists in some closure.
 contains :: Typeable a => Closure cls -> Var a -> Bool
 contains (C1 x) y = AnyVar x == AnyVar y
 contains (CCons left right) y = AnyVar right == AnyVar y || contains left y
 
+-- |Build a projection function from the closure for a given variable.
 prj ::
   forall cls a h m.
   ( MonadThrowWithStack m,
@@ -59,8 +72,12 @@ prj (CCons left (right :: _ b)) x
           else throwM' . InternalError $ printf "prj: cannot find variable %s" (show x)
       _ -> throwM' . InternalError $ printf "prj: cannot find variable %s" (show x)
 
+-- |The result of closure conversion.
 data Result :: * -> * where
+  -- |The input function contains no top-level free variable.
   AlreadyClosed :: HFix h (() -> a -> b) -> Result (HFix h (a -> b))
+  -- |The input function has been closure converted into a closed function, and
+  -- the extracted closure.
   Converted :: Typeable cls => HFix h cls -> HFix h (cls -> a -> b) -> Result (HFix h (a -> b))
 
 -- | Closure convert the top-level lambda. Taking out its free variables, and

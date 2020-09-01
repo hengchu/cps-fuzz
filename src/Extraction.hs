@@ -1,5 +1,8 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
-
+{-|
+Module: Extraction
+Description: Implementations of the extraction mechanism from compiled BMCS code to python MAMBA code
+-}
 module Extraction where
 
 import HFunctor
@@ -14,6 +17,7 @@ import Compiler (compileM)
 import Control.Monad.State.Strict
 import qualified Data.Map as M
 
+-- |Binary operators in python mamba.
 data Bop = Add   | Mult
          | Sub   | Div
          | Lt    | Le | Gt | Ge
@@ -23,9 +27,11 @@ data Bop = Add   | Mult
          | Is    | IsNot
   deriving (Show, Eq, Ord)
 
+-- |Unary operators in python mamba.
 data Uop = BNot
   deriving (Show, Eq, Ord)
 
+-- |Expressions in python mamba.
 data Exp = Binary Exp Bop Exp
          | List [Exp]
          | Tuple [Exp]
@@ -40,6 +46,7 @@ data Exp = Binary Exp Bop Exp
          | None
   deriving (Show, Eq, Ord)
 
+-- |Statements in python mamba.
 data Stmt = ExpStmt Exp
           | Assign  UniqueName Exp
           | Assert  Exp
@@ -50,6 +57,7 @@ data Stmt = ExpStmt Exp
           | Skip
   deriving (Show, Eq, Ord)
 
+-- |A function declaration.
 data FuncDecl = FuncDecl {
   _fdName     :: UniqueName
   , _fdParams :: [UniqueName]
@@ -68,16 +76,23 @@ data Extraction = E {
 
 makeLensesWith abbreviatedFields ''Extraction
 
-data ExtractionError = InternalError String
+-- |Errors that may arise during code extraction.
+data ExtractionError =
+  -- |An internal error is a compiler bug.
+  InternalError String
   deriving (Show, Eq, Ord)
 
 instance Exception ExtractionError
 
+-- |The code zone definitions.
 data Zone = Orange | Other
 
+-- |The representation of a code extraction function, it is a mapping from code
+-- zone to extracted python mamba code.
 newtype ExtractionFun m a =
   ExtractionFun { runExtraction :: Zone -> m Extraction }
 
+-- |Typeclass for types that have a default mamba representation.
 class DefaultMamba ty where
   defaultMamba :: Exp
 
@@ -96,6 +111,7 @@ instance (DefaultMamba a, DefaultMamba b) => DefaultMamba (a, b) where
 instance DefaultMamba a => DefaultMamba (Distr a) where
   defaultMamba = defaultMamba @a
 
+-- |Convert a Orchard Fuzz literal value to a mamba literal value.
 lit2Mamba ::  Literal -> Exp
 lit2Mamba lit@(I _) = CallBuiltin "cint" [Val lit]
 lit2Mamba lit@(D _) = CallBuiltin "cfix" [Val lit]
@@ -103,6 +119,7 @@ lit2Mamba (P (a, b)) = Tuple [lit2Mamba a, lit2Mamba b]
 lit2Mamba U = Tuple []
 lit2Mamba (V (Vec v)) = Extraction.List . map (Val . D) $ v
 
+-- |Manual and deferred resolution of the 'DefaultMamba' constraint.
 resolveDefaultMamba :: forall a. Typeable a => Maybe (Dict (DefaultMamba a))
 resolveDefaultMamba =
   case eqTypeRep (typeRep @a) (typeRep @Int) of
@@ -126,6 +143,7 @@ resolveDefaultMamba =
                         _ -> Nothing
                     _ -> Nothing
 
+-- |Extract lambda terms.
 extractExprF ::
   (MonadThrowWithStack m, FreshM m) =>
   ExprF (ExtractionFun m) a ->
@@ -150,12 +168,14 @@ extractExprF (ECompF (runExtraction -> g) (runExtraction -> f)) = ExtractionFun 
     E (gExtr ^. statements ++ fExtr ^. statements)
       (CallBuiltin "fun_comp" [gExtr ^. expr, fExtr ^. expr])
 
+-- |Get the default mamba representation for a type.
 defaultMambaExpr :: forall a m. (Typeable a, MonadThrowWithStack m) => m Exp
 defaultMambaExpr =
   case resolveDefaultMamba @a of
     Just d -> withDict d $ return (defaultMamba @a)
     Nothing -> throwM' . InternalError $ printf "expected DefaultMamba for type %s" (show $ typeRep @a)
 
+-- |Extract control flow.
 extractControlF ::
   (MonadThrowWithStack m, FreshM m) =>
   ControlF (ExtractionFun m) a ->
@@ -269,9 +289,11 @@ extractControlF (CLoopF ((runExtraction -> acc) :: _ acc) (runExtraction -> pred
       return $
         E stmts (Extraction.Var loopResultName)
 
+-- |A helper term that is the natural log base "e".
 naturalBase :: Exp
 naturalBase = Val (D (Prelude.exp 1))
 
+-- |Extract primitive operations.
 extractPrimF :: forall a m.
   (MonadThrowWithStack m, FreshM m) =>
   PrimF (ExtractionFun m) a ->
@@ -443,6 +465,7 @@ extractPrimF (PConcatF (runExtraction -> a) (runExtraction -> b)) = ExtractionFu
   bExtr <- b zone
   return $ E (aExtr ^. statements ++ bExtr ^. statements) (Binary (aExtr ^. expr) Add (bExtr ^. expr))
 
+-- |Extract monadic terms.
 extractExprMonadF ::
   (MonadThrowWithStack m, FreshM m) =>
   ExprMonadF (ExtractionFun m) a ->
@@ -531,6 +554,7 @@ extractExprMonadF (EBindF (runExtraction -> m) (Syn.Var bound) (runExtraction ->
               ++ kExtr ^. statements
   return $ E stmts (kExtr ^. expr)
 
+-- |Extract BMCS calls.
 extractBmcsF ::
   MonadThrowWithStack m =>
   BmcsF (ExtractionFun m) a ->
@@ -551,6 +575,7 @@ extractBmcsF (BRunF reprSize (Vec clip) (runExtraction -> mstate) (runExtraction
                                         rstateExtr ^. expr,
                                         rfExtr ^. expr])
 
+-- |The combined f-algebra for extracting compiled Orchard Fuzz code.
 extract' :: (MonadThrowWithStack m, FreshM m) => HFix NBmcsF a -> ExtractionFun m a
 extract' = hcata' (extractBmcsF
                    `sumAlg` extractExprMonadF
@@ -558,9 +583,11 @@ extract' = hcata' (extractBmcsF
                    `sumAlg` extractControlF
                    `sumAlg` extractPrimF)
 
+-- |Same as 'extract'', but unwraps the 'ExtractionFun' wrapper.
 extractM :: (MonadThrowWithStack m, FreshM m) => HFix NBmcsF a -> m Extraction
 extractM prog = runExtraction (extract' prog) Other
 
+-- |A convenient function that runs the compiler, followed by extraction.
 compileAndExtract ::
   (Typeable row, Typeable a) =>
   String ->

@@ -1,7 +1,12 @@
+{-|
+Module: HFunctor
+Description: Definitions and utilities of higher-order functors used for syntax encoding
+-}
 module HFunctor where
 
 import GHC.Generics(Generic)
 
+-- |The "const" functor.
 newtype K a b = K a
   deriving (Show, Eq, Ord, Functor)
 
@@ -26,9 +31,11 @@ infixr 9 :.:
 
 type h :.: j = HComp h j
 
+-- |Compositions of two higher-order functors.
 newtype HComp h j r a where
   HComp :: h (j r) a -> HComp h j r a
 
+-- |Sum of two higher-order functors.
 data
   (f :: (* -> *) -> * -> *)
     :+: (g :: (* -> *) -> * -> *) :: (* -> *) -> * -> * where
@@ -36,6 +43,7 @@ data
   Inr :: g r a -> (f :+: g) r a
   deriving (Generic)
 
+-- |Product of two higher-order functors.
 data
   (f :: (* -> *) -> * -> *)
     :*: (g :: (* -> *) -> * -> *) :: (* -> *) -> * -> * where
@@ -44,12 +52,15 @@ data
 data (f :: * -> *) :* (g :: * -> *) :: * -> * where
   Prod :: f a -> g a -> (f :* g) a
 
+-- |Left projection of product.
 prj1 :: (f :* g) a -> f a
 prj1 (Prod a _) = a
 
+-- |Right projection of product.
 prj2 :: (f :* g) a -> g a
 prj2 (Prod _ b) = b
 
+-- |Unwrap const.
 unK :: K a b -> a
 unK (K a) = a
 
@@ -59,6 +70,7 @@ instance Semigroup m => Semigroup (K m a) where
 instance Monoid m => Monoid (K m a) where
   mempty = K mempty
 
+-- |A higher-order 'Maybe'.
 data HMaybe f a where
   HJust :: f a -> HMaybe f a
   HNothing :: HMaybe f a
@@ -69,6 +81,7 @@ data HXFix (h :: (* -> *) -> * -> *) (f :: * -> *) (a :: *) where
   HXFix :: h (HXFix h f) a -> HXFix h f a
   Place :: f a -> HXFix h f a
 
+-- | Similar to 'HXFix', but does *not* allow holes in the tree.
 data HFix (h :: (* -> *) -> * -> *) (a :: *) where
   HFix :: h (HFix h) a -> HFix h a
 
@@ -80,23 +93,29 @@ class
   hinject' :: h r a -> j r a
   hproject' :: j r a -> Maybe (h r a)
 
+-- | A higher-order functor maps a natural transformation over the term.
 class HFunctor (h :: (* -> *) -> * -> *) where
   hmap ::
     (forall a. f a -> g a) ->
     (forall a. h f a -> h g a)
 
+-- | Higher-order 'Foldable'.
 class HFunctor h => HFoldable h where
   hfoldMap ::
     Monoid m =>
     (forall a. f a -> m) ->
     (forall a. h f a -> m)
 
+-- | Higher-order 'Traversable'.
 class HFoldable h => HTraversable h where
   htraverse ::
     Applicative m =>
     (forall a. f a -> m (g a)) ->
     (forall a. h f a -> m (h g a))
 
+-- | A higher-order exponential functor maps a natural transformation over the
+-- term, but also may use a "reverse" natural transformation to facilitate the
+-- mapping.
 class HXFunctor (h :: (* -> *) -> * -> *) where
   hxmap ::
     (forall a. f a -> g a) ->
@@ -118,6 +137,7 @@ sumAlg ::
 sumAlg alg1 _ (Inl a) = alg1 a
 sumAlg _ alg2 (Inr a) = alg2 a
 
+-- | Takes 2 monadic algebras and lift them to an algebra on the sum type.
 sumAlgM ::
   (forall a. h f a -> m (f a)) ->
   (forall a. j f a -> m (f a)) ->
@@ -125,6 +145,7 @@ sumAlgM ::
 sumAlgM algM1 _ (Inl a) = algM1 a
 sumAlgM _ algM2 (Inr a) = algM2 a
 
+-- | Takes 2 algebras and lift them to an algebra on the product type.
 prodAlg ::
   HFunctor h =>
   (forall a. h f a -> f a) ->
@@ -135,6 +156,7 @@ prodAlg alg1 alg2 a = Prod (alg1 af) (alg2 ag)
     af = hmap prj1 a
     ag = hmap prj2 a
 
+-- | Takes 2 monadic algebras and lift them to an algebra on the product type.
 prodAlgM ::
   (HFunctor h, Applicative m) =>
   (forall a. h f a -> m (f a)) ->
@@ -145,6 +167,9 @@ prodAlgM algM1 algM2 a = Prod <$> (algM1 af) <*> (algM2 ag)
     af = hmap prj1 a
     ag = hmap prj2 a
 
+-- | Takes 2 monadic algebras, together with a composition function that takes
+-- the product functor into some other carrier, and lift them to an algebra on
+-- the product type.
 prodAlgWithM ::
   (HFunctor h, Monad m) =>
   (forall a. h f a -> m (f a)) ->
@@ -195,11 +220,7 @@ relax (HFix term) = HXFix . (hmap relax) $ term
 contract :: HFunctor h => (forall f. HXFix h f a) -> HFix h a
 contract = hcata wrap
 
--- | Catamorphism over a functor-functor. But wait a second, can't we just
--- instantiate `f` with some monad? I guess that's OK... If `a` is a monadic
--- type, then we just have layers of uncomposed monads. The result will not be a
--- monad transformer stack, as the binds of `f` do not propagate into `a`, but
--- that's OK maybe?
+-- | Catamorphism over a higher-order functor.
 hxcata ::
   forall h f.
   HXFunctor h =>
@@ -210,6 +231,7 @@ hxcata alg (HXFix term) = alg . go $ term
   where
     go = hxmap (hxcata alg) xplace
 
+-- | Same as 'hxcata', but requires 'HFunctor'.
 hcata ::
   forall h f.
   HFunctor h =>
@@ -220,6 +242,7 @@ hcata alg (HXFix term) = alg . go $ term
   where
     go = hmap (hcata alg)
 
+-- | Same as 'hcata', but operators over 'HFix'.
 hcata' ::
   forall h f.
   HFunctor h =>
@@ -228,6 +251,7 @@ hcata' ::
 hcata' alg (HFix term) =
   alg . hmap (hcata' alg) $ term
 
+-- | Fold a monadic algebra over a term.
 hcataM ::
   forall h f m.
   (HTraversable h, Monad m) =>
@@ -236,6 +260,7 @@ hcataM ::
 hcataM _ (Place term) = pure term
 hcataM algM (HXFix term) = (algM =<<) . htraverse (hcataM algM) $ term
 
+-- | Same as 'hcataM', but operates over a 'HFix'.
 hcataM' ::
   forall h f m.
   (HTraversable h, Monad m) =>

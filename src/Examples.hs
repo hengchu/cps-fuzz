@@ -1,5 +1,8 @@
 {-# LANGUAGE RebindableSyntax #-}
-
+{-|
+Module: Examples
+Description: Benchmark algorithms and a few example terms written in Orchard Fuzz.
+-}
 module Examples where
 
 import Data.List
